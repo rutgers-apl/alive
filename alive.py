@@ -16,7 +16,7 @@
 
 import argparse, glob, re, sys
 from language import *
-from parser import parse_llvm, parse_opt_file
+from parser import parse_opt_file
 
 
 def block_model(s, sneg, m):
