@@ -103,7 +103,8 @@ class UnknownType(Type):
 
   def ensureFirstClass(self):
     # Restrict to ints, pointers, FPs, vectors
-    del self.types[self.Array]
+    if self.Array in self.types:
+      del self.types[self.Array]
     return self
 
   def ensureIntPtrOrVector(self):
