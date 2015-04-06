@@ -11,6 +11,9 @@ NAME, PRE, SRC_BB, TGT_BB, SRC, TGT, SRC_USED, TGT_USED, TGT_SKIP = range(9)
 
 
 def dump(instr):
+  if isinstance(instr, Instr) and hasattr(instr, 'name'):
+    return '<{0}|{1}>#{2}'.format(instr.getName(), instr, id(instr))
+
   return '<{0}>#{1}'.format(instr, id(instr))
 
 class Visitor(object):
@@ -296,16 +299,16 @@ class Unifier(Visitor):
     self.t2 = None
   
   def unify(self, var, term):
-    #print 'unify', var, term
+    print 'unify', var, term
     if var in self.vars:
       return self(self.vars[var], term)
     
-    #print '.. {0} := {1}'.format(var,term)
+    print '.. {0} := {1}'.format(dump(var),dump(term))
     self.vars[var] = term
     return True
     
   def __call__(self, t1, t2):
-    #print 'Unifier({0})({1}, {2})'.format(self.vars, t1, t2)
+    print 'Unifier({0})({1}, {2})'.format(self.vars, dump(t1), dump(t2))
     if isinstance(t1, Input):
       return self.unify(t1, t2)
     
@@ -318,6 +321,9 @@ class Unifier(Visitor):
     old_t2 = self.t2
     self.t2 = t2
     r = t1.visit(self)
+    if r:
+      self.vars[t2] = t1
+      print '.. {0} := {1}'.format(dump(t2),dump(t1))
     self.t2 = old_t2
     return r
   
@@ -340,30 +346,45 @@ class Grafter(CopyBase):
     self.vars = vars  # old value -> old value
     self.done = {}    # old value -> new value
     self.ids = collections.OrderedDict()  # name -> new value
+    self.depth = 0
   
   def __call__(self, term):
     return self.operand(term)
   
   def subtree(self, term):
-    #print 'subtree:', dump(term), term in self.done
-    if term not in self.done:
-      new_term = term.visit(self)
-      #print '.. visit <=', dump(new_term)
-      
-      #if not hasattr(term, 'name'):
-      #  print 'NO NAME:', term
-      #  assert False
-      
-      if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
-        name = term.getName()
-        while name in self.ids:
-          name += '0'
-
-        new_term.setName(name)
-      
-      self.done[term] = new_term
+    print '.' * self.depth,
+    print 'subtree:', dump(term), 'Done', term in self.done, 'Var', term in self.vars
     
-    #print 'subtree <=', dump(self.done[term])
+    if term in self.done:
+      return self.done[term]
+
+    # check whether this term was unified
+    if term in self.vars:
+      print '.' * self.depth,
+      print '.. substitute', dump(term), ':=', dump(self.vars[term])
+      #term = self.vars[term]
+      return self.subtree(self.vars[term])
+  
+    self.depth += 1
+    new_term = term.visit(self)
+    self.depth -= 1
+    #print '.. visit <=', dump(new_term)
+    
+    #if not hasattr(term, 'name'):
+    #  print 'NO NAME:', term
+    #  assert False
+    
+    if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
+      name = term.getName()
+      while name in self.ids:
+        name += '0'
+
+      new_term.setName(name)
+    
+    self.done[term] = new_term
+    
+    print '.' * self.depth,
+    print 'subtree <=', dump(self.done[term])
     
     return self.done[term]
   
@@ -379,7 +400,7 @@ class Grafter(CopyBase):
     return new_term
 
   def visit_Input(self, term):
-    #print 'visit_Input', dump(term), self.vars.get(term, None)
+    print 'visit_Input', dump(term), '=>', self.vars.get(term, None)
 
     if term in self.vars:
       return self.subtree(self.vars[term])
@@ -416,12 +437,14 @@ def compose(op1, op2):
   
   print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
   
-  #print '\n-----\nsrc'
+  print '\n-----\nsrc'
   graft = Grafter(unify.vars)
   new_s = graft(op1.src_root())
   
-  #print '\n-----\npre1'
+  print '\n-----\npre1'
   pre1 = graft.subtree(op1.pre)
+  
+  print '\n-----\npre2'
   pre2 = graft.subtree(op2.pre)
 
   src = copy(graft.ids)
@@ -432,7 +455,7 @@ def compose(op1, op2):
   
   #graft.ids = collections.OrderedDict()
   
-  #print '\n-----\ntgt'
+  print '\n-----\ntgt'
   rname = new_s.getName()
   graft.ids.pop(rname)
   tgt_skip.discard(rname)
@@ -449,6 +472,8 @@ def compose(op1, op2):
   
   comp = Transformation(op1.name + ';' + op2.name, mk_PredAnd(pre1,pre2),
     src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
+  
+  assert comp.src_root() is new_s
   
   
   #print '\n-----'
@@ -629,8 +654,11 @@ def check_self_loop(opt):
   o2 = opt.copy()
   for oo in all_bin_compositions(opt, o2):
     print '\n-----\n', oo.name
-    if satisfiable(oo):
-      oo.dump()
+    try:
+      if satisfiable(oo):
+        oo.dump()
+    except Exception, e:
+      print 'Caught', e
 
 
 # -----
@@ -671,6 +699,15 @@ Name: add->shl
 %x = add %a, %a
 =>
 %x = shl %a, 1
+'''
+
+sample_selfloop = '''
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = lshr %A, %B
+%r = udiv %X, %Y
+  =>
+%Y = lshr exact %A, %B
+%r = udiv %X, %Y
 '''
 
 def parse_transforms(input):
@@ -748,7 +785,9 @@ def test_new_compose(input = sample_nonlinear):
     #opts.append(opts[0].copy(lambda n: n + '_1'))
     opts.append(opts[0].copy())
 
-  compose(opts[0], opts[1])
+  c = compose(opts[0], opts[1])
+  if c: 
+    c.dump()
 
 def test_compose_off_first(input = sample_add):
   print
@@ -775,7 +814,7 @@ def test_compose_off_first(input = sample_add):
 
 def test_compose_off_second(input = sample_add):
   print
-  print 'TEST compose_off_first'
+  print 'TEST compose_off_second'
   print '----------------------'
   print
   opts = parse_transforms(input)
@@ -801,7 +840,7 @@ def test_compose_off_second(input = sample_add):
 
 def test_all_comps(input = sample_nonlinear):
   print
-  print 'TEST compose_off_first'
+  print 'TEST all_comps'
   print '----------------------'
   print
   opts = parse_transforms(input)
@@ -812,7 +851,7 @@ def test_all_comps(input = sample_nonlinear):
 
 def test_satisfiable(input = sample):
   print
-  print 'TEST compose_off_first'
+  print 'TEST satisfiable'
   print '----------------------'
   print
   opts = parse_transforms(input)
@@ -824,7 +863,7 @@ def test_satisfiable(input = sample):
 
 def test_self_loops(input = sample):
   print
-  print 'TEST compose_off_first'
+  print 'TEST self_loops'
   print '----------------------'
   print
   opts = parse_transforms(input)
@@ -846,4 +885,5 @@ if __name__ == '__main__':
   #test_new_compose(sample_add)
   #test_new_compose(sample_cadd)
   #test_new_compose(sample_nonlinear)
-  test_all_comps()
+  test_all_comps(sample_selfloop)
+  #test_self_loops(sample_selfloop)
