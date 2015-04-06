@@ -6,6 +6,7 @@ from parser import parse_opt_file
 from itertools import combinations, izip, count
 #from collections import defaultdict
 from copy import copy
+import alive
 
 NAME, PRE, SRC_BB, TGT_BB, SRC, TGT, SRC_USED, TGT_USED, TGT_SKIP = range(9)
 
@@ -71,7 +72,9 @@ class CopyBase(Visitor):
                         copy_type(term.type))
 
   def visit_Icmp(self, term):
-    return Icmp(term.op, copy_type(term.type), self.operand(term.v1),
+    op = term.opname if term.op == Icmp.Var else Icmp.opnames[term.op]
+    
+    return Icmp(op, copy_type(term.type), self.operand(term.v1),
                 self.operand(term.v2))
 
   def visit_Select(self, term):
@@ -92,7 +95,7 @@ class CopyBase(Visitor):
     return CnstBinaryOp(val.op, self.subtree(val.v1), self.subtree(val.v2))
   
   def visit_CnstFunction(self, val):
-    return CnstFunction(val.op, [self.subtree(a) for a in val.args], 
+    return CnstFunction(val.op, [self.operand(a) for a in val.args], 
                         copy_type(val.type))
   
   # -- predicates
@@ -289,6 +292,87 @@ class Transformation(object):
                          None, None, tgt_skip)
     return new
 
+  def type_models(self):
+    '''Yields all type models satisfying the transformation's type constraints.
+    '''
+    
+    reset_pick_one_type()
+    global gbl_prev_flags
+    gbl_prev_flags = []
+    
+    # infer allowed types for registers
+    type_src = getTypeConstraints(self.src)
+    type_tgt = getTypeConstraints(self.tgt)
+    type_pre = self.pre.getTypeConstraints()
+
+    s = SolverFor('QF_LIA')
+    s.add(type_pre)
+    if s.check() != sat:
+      raise AliveError(self.name + ': Precondition does not type check')
+
+    # Only one type per variable/expression in the precondition is required.
+    for v in s.model().decls():
+      register_pick_one_type(v)
+
+    s.add(type_src)
+    unregister_pick_one_type(alive.get_smt_vars(type_src))
+    if s.check() != sat:
+      raise AliveError(self.name + ': Source program does not type check')
+
+    s.add(type_tgt)
+    unregister_pick_one_type(alive.get_smt_vars(type_tgt))
+    if s.check() != sat:
+      raise AliveError(self.name + 
+        ': Source and Target programs do not type check')
+
+    # Pointers are assumed to be either 32 or 64 bits
+    ptrsize = Int('ptrsize')
+    s.add(Or(ptrsize == 32, ptrsize == 64))
+
+    sneg = SolverFor('QF_LIA')
+    sneg.add(Not(mk_and([type_pre] + type_src + type_tgt)))
+
+
+    # temporarily disabled
+#     has_unreach = any(v.startswith('unreachable') for v in self.tgt.iterkeys())
+#     for v in self.src.iterkeys():
+#       if v[0] == '%' and v not in self.src_used and v not in self.tgt_used and\
+#          v in self.tgt_skip and not has_unreach:
+# 
+#          raise AliveError(self.name + 
+#            ':ERROR: Temporary register %s unused and not overwritten' % v)
+# 
+#     for v in self.tgt.iterkeys():
+#       if v[0] == '%' and v not in self.tgt_used and v not in self.src:
+#         raise AliveError(self.name +
+#            ':ERROR: Temporary register %s unused and does not overwrite any'\
+#            ' Source register' % v)
+
+    # disabled because it doesn't seem necessary 
+#     # build constraints that indicate the number of users for each register.
+#     users_count = countUsers(self.src_bb)
+#     users = {}
+#     for k in self.src.iterkeys():
+#       n_users = users_count.get(k)
+#       users[k] = [get_users_var(k) != n_users] if n_users else []
+
+    # pick one representative type for types in Pre
+    res = s.check()
+    assert res != unknown
+    if res == sat:
+      s2 = SolverFor('QF_LIA')
+      s2.add(s.assertions())
+      alive.pick_pre_types(s, s2)
+
+    while res == sat:
+      types = s.model()
+      yield types
+      
+      alive.block_model(s, sneg, types)
+      res = s.check()
+      assert res != unknown
+
+
 # ----
 
 class Unifier(Visitor):
@@ -299,16 +383,16 @@ class Unifier(Visitor):
     self.t2 = None
   
   def unify(self, var, term):
-    print 'unify', var, term
+    #print 'unify', var, term
     if var in self.vars:
       return self(self.vars[var], term)
     
-    print '.. {0} := {1}'.format(dump(var),dump(term))
+    #print '.. {0} := {1}'.format(dump(var),dump(term))
     self.vars[var] = term
     return True
     
   def __call__(self, t1, t2):
-    print 'Unifier({0})({1}, {2})'.format(self.vars, dump(t1), dump(t2))
+    #print 'Unifier({0})({1}, {2})'.format(self.vars, dump(t1), dump(t2))
     if isinstance(t1, Input):
       return self.unify(t1, t2)
     
@@ -323,7 +407,7 @@ class Unifier(Visitor):
     r = t1.visit(self)
     if r:
       self.vars[t2] = t1
-      print '.. {0} := {1}'.format(dump(t2),dump(t1))
+      #print '.. {0} := {1}'.format(dump(t2),dump(t1))
     self.t2 = old_t2
     return r
   
@@ -352,16 +436,16 @@ class Grafter(CopyBase):
     return self.operand(term)
   
   def subtree(self, term):
-    print '.' * self.depth,
-    print 'subtree:', dump(term), 'Done', term in self.done, 'Var', term in self.vars
+    #print '.' * self.depth,
+    #print 'subtree:', dump(term), 'Done', term in self.done, 'Var', term in self.vars
     
     if term in self.done:
       return self.done[term]
 
     # check whether this term was unified
     if term in self.vars:
-      print '.' * self.depth,
-      print '.. substitute', dump(term), ':=', dump(self.vars[term])
+      #print '.' * self.depth,
+      #print '.. substitute', dump(term), ':=', dump(self.vars[term])
       #term = self.vars[term]
       return self.subtree(self.vars[term])
   
@@ -383,8 +467,8 @@ class Grafter(CopyBase):
     
     self.done[term] = new_term
     
-    print '.' * self.depth,
-    print 'subtree <=', dump(self.done[term])
+    #print '.' * self.depth,
+    #print 'subtree <=', dump(self.done[term])
     
     return self.done[term]
   
@@ -400,7 +484,7 @@ class Grafter(CopyBase):
     return new_term
 
   def visit_Input(self, term):
-    print 'visit_Input', dump(term), '=>', self.vars.get(term, None)
+    #print 'visit_Input', dump(term), '=>', self.vars.get(term, None)
 
     if term in self.vars:
       return self.subtree(self.vars[term])
@@ -435,16 +519,16 @@ def compose(op1, op2):
   if not match:
     return None
   
-  print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
+  #print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
   
-  print '\n-----\nsrc'
+  #print '\n-----\nsrc'
   graft = Grafter(unify.vars)
   new_s = graft(op1.src_root())
   
-  print '\n-----\npre1'
+  #print '\n-----\npre1'
   pre1 = graft.subtree(op1.pre)
   
-  print '\n-----\npre2'
+  #print '\n-----\npre2'
   pre2 = graft.subtree(op2.pre)
 
   src = copy(graft.ids)
@@ -455,7 +539,7 @@ def compose(op1, op2):
   
   #graft.ids = collections.OrderedDict()
   
-  print '\n-----\ntgt'
+  #print '\n-----\ntgt'
   rname = new_s.getName()
   graft.ids.pop(rname)
   tgt_skip.discard(rname)
@@ -493,7 +577,7 @@ def compose_off_first(op1, k, op2):
   if not match:
     return None
     
-  print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
+  #print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
   
   graft = Grafter(unify.vars)
   new_s = graft(op1.src_root())
@@ -543,7 +627,7 @@ def compose_off_second(k, op1, op2):
   if not match:
     return None
     
-  print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
+  #print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
   
   graft = Grafter(unify.vars)
   new_s = graft(op1.src_root())
@@ -588,33 +672,35 @@ def compose_off_second(k, op1, op2):
 def satisfiable(opt):
   '''check whether a transformation's precondition can be satisfied'''
   
-  pre = opt.pre
+  #print '-----'
+  #print opt.dump()
   
-  s = SolverFor('QF_LIA')
-  s.add(pre.getTypeConstraints())
-  if s.check() != sat:
-    raise Exception("Cannot satisfy precondition type constraints")
+  for types in opt.type_models():
+    #print 'attempting'
+    set_ptr_size(types)
+    fixupTypes(opt.src, types)
+    fixupTypes(opt.tgt, types)
+    opt.pre.fixupTypes(types)
+    
+    srcv = toSMT(opt.src_bb, opt.src, True)
+    tgtv = toSMT(opt.tgt_bb, opt.tgt, False)
+    pre_d, pre = opt.pre.toSMT(srcv)
+    
+    extra_cnstrs = pre_d + pre  # NOTE: not checking allocas
+    
+    # show satsifiability
+    # NOTE: does this need to know about qvars?
+    s = alive.tactic.solver()
+    s.add(extra_cnstrs)
+    #print 'checking', s
+    res = s.check()
+    
+    if res == sat:
+      #print 'success:', s.model()
+      return True
+    
+  return False
   
-  types = s.model()
-  pre.fixupTypes(types)
-  
-  # check whether precondition can be satisfied
-  pre_d, pre_b = pre.toSMT(None) # FIXME
-  
-  ps = SolverFor('QF_LIA')
-  ps.add(pre_d)
-  ps.add(pre_b)
-  
-  print 'ps', ps
-  
-  ch = ps.check()
-  print 'ch', ch
-  
-  if ch == sat:
-    print 'model', ps.model()
-  
-  return ch == sat
-
 
 def all_bin_compositions(o1, o2):
   assert o1 is not o2
@@ -651,239 +737,48 @@ def all_compositions(opts):
 def check_self_loop(opt):
   '''Check all satisfiable self-compositions.'''
   
+  print '\n-----\nExamining', opt.name
+
+  opt_src_len = sum(1 for v in opt.src.itervalues() if isinstance(v, Instr))
+  
   o2 = opt.copy()
   for oo in all_bin_compositions(opt, o2):
-    print '\n-----\n', oo.name
+    print '\n'
+    oo.dump()
+    
+    oo_src_len = sum(1 for v in oo.src.itervalues() if isinstance(v, Instr))
+    
+    # FIXME: need to decide how to count this
+    oo_tgt_len = sum(1 for v in oo.tgt.itervalues() 
+                    if isinstance(v, Instr) and v.getName() not in oo.tgt_skip)
+    
+    print 'opt_src_len', opt_src_len
+    print 'oo_src_len', oo_src_len
+    print 'oo_tgt_len', oo_tgt_len
+    
+    if opt_src_len < oo_src_len:
+      print 'COMPOSITION INCREASES SOURCE'
+      continue
+    
+    #if oo_src_len > oo_tgt_len:
+    #  print 'DECREASING'
+    
     try:
       if satisfiable(oo):
+        print '\nSATISFIABLE'
         oo.dump()
+      else: 
+        print 'UNSATISFIABLE'
     except Exception, e:
-      print 'Caught', e
+      print 'CAUGHT from satisfiable():', e
 
-
-# -----
-
-sample = '''
-Pre: C1&C2 != C1
-%op = or %X, C1
-%r = and %op, C2
-  =>
-%o = or %X, C1&C2
-%r = and %o, C2
-'''
-
-sample_add = '''
-%y = add %b,%c
-%z = add %a,%y
-=>
-%x = add %a,%b
-%z = add %x,%c
-'''
-
-sample_cadd = '''
-%a = add %x, C1
-%z = add %a, C2
-=>
-%z = add %x, C1+C2
-'''
-
-sample_nonlinear = '''
-Name: commute add
-%y = add %b, %c
-%z = add %a, %y
-=>
-%x = add %a, %b
-%z = add %x, %c
-
-Name: add->shl
-%x = add %a, %a
-=>
-%x = shl %a, 1
-'''
-
-sample_selfloop = '''
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
-%Y = lshr %A, %B
-%r = udiv %X, %Y
-  =>
-%Y = lshr exact %A, %B
-%r = udiv %X, %Y
-'''
-
-def parse_transforms(input):
-  return [Transformation(*o) for o in parse_opt_file(input)]
-
-def test_is_composable(input):
-  opts = [Transformation(*o) for o in parse_opt_file(input)]
-  print
-  print 'TEST is_composable'
-  print '------------------'
-  print
-
-  for o1, o2 in combinations(opts, 2):
-    print '----------'
-    print 'checking {0} and {1}'.format(o1.name, o2.name)
-    r = is_composable(o1, o2)
-    print '=>', r
-  
-def test_copy(input = sample):
-  print
-  print 'TEST copy'
-  print '---------'
-  print
-  opts = [Transformation(*o) for o in parse_opt_file(input)]
-  
-  for o in opts:
-    print
-    print '----------'
-    o.copy(lambda n: n + '.1').dump()
-  
-def test_compose_self(input = sample_add):
-  print
-  print 'TEST compose_self'
-  print '-----------------'
-  print
-
-  opts = [Transformation(*o) for o in parse_opt_file(input)]
-  
-  o1 = opts[0]
-  #o2 = o1.copy(lambda n: n + '.1')
-  o2 = o1.copy()
-  
-  print '\nOriginal'
-  o1.dump()
-  print '\nCopy'
-  o2.dump()
-  
-  compose(o1, o2)
-  
-def test_unify(input = sample_nonlinear):
-  print
-  print 'TEST unify'
-  print '-----------------'
-  print
-
-  opts = [Transformation(*o) for o in parse_opt_file(input)]
-  if len(opts) == 1:
-    opts.append(opts[0].copy()) #lambda n: n + '._1'))
-  
-  t1 = opts[0].tgt[opts[0].src_root().getName()]
-  t2 = opts[1].src_root()
-
-  unify = Unifier({})
-  print 'Unifies:', unify(t1,t2)
-  print 'Vars:', unify.vars
-
-def test_new_compose(input = sample_nonlinear):
-  print
-  print 'TEST new_compose'
-  print '----------------'
-  print
-
-  opts = [Transformation(*o) for o in parse_opt_file(input)]
-  if len(opts) == 1:
-    #opts.append(opts[0].copy(lambda n: n + '_1'))
-    opts.append(opts[0].copy())
-
-  c = compose(opts[0], opts[1])
-  if c: 
-    c.dump()
-
-def test_compose_off_first(input = sample_add):
-  print
-  print 'TEST compose_off_first'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-  
-  if len(opts) == 1:
-    opts.append(opts[0].copy()) #lambda n: n + '.1'))
-  
-  o1 = opts[0]
-  o2 = opts[1]
-  
-  regs = [k for k,v in o2.src.iteritems() if isinstance(v, Instr)]
-  
-  print 'composing', o1.name, o2.name
-  o1.dump()
-  o2.dump()
-  
-  for r in regs:
-    print '\n-----\ncompose at', r
-    compose_off_first(o1, r, o2)
-
-def test_compose_off_second(input = sample_add):
-  print
-  print 'TEST compose_off_second'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-  
-  if len(opts) == 1:
-    opts.append(opts[0].copy()) #lambda n: n + '.1'))
-  
-  o1 = opts[0]
-  o2 = opts[1]
-  
-  regs = [k for k,v in o1.tgt.iteritems() 
-            if isinstance(v, Instr) and k not in o1.tgt_skip]
-  
-  regs.pop()
-  
-  print 'composing', o1.name, o2.name
-  o1.dump()
-  o2.dump()
-  
-  for r in regs:
-    print '\n-----\ncompose at', r
-    compose_off_second(r, o1, o2)
-
-def test_all_comps(input = sample_nonlinear):
-  print
-  print 'TEST all_comps'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-  
-  for c in all_compositions(opts):
-    print '\n-----'
-    c.dump()
-
-def test_satisfiable(input = sample):
-  print
-  print 'TEST satisfiable'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-
-  for c in all_compositions(opts):
-    print '\n-----'
-    if satisfiable(c):
-      c.dump()
-
-def test_self_loops(input = sample):
-  print
-  print 'TEST self_loops'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-
-  for o in opts:
-    check_self_loop(o)
 
 if __name__ == '__main__':
-  #sys.stderr.write("[Reading from stdin...]\n")
-  #test_is_composable(sys.stdin.read())
-  
-  #test_is_composable(sample_nonlinear)
-  
-  #test_copy(sys.stdin.read())
-  #test_compose_self(sample_cadd)
-  #test_unify(sample)
+  sys.stderr.write("[Reading from stdin...]\n")
+  opts = parse_transforms(sys.stdin.read())
 
-  #test_new_compose(sample)
-  #test_new_compose(sample_add)
-  #test_new_compose(sample_cadd)
-  #test_new_compose(sample_nonlinear)
-  test_all_comps(sample_selfloop)
-  #test_self_loops(sample_selfloop)
+  for o in opts:
+    try:
+      check_self_loop(o)
+    except Exception, e:
+      print o.name, ': CAUGHT', e
