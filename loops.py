@@ -393,6 +393,10 @@ class Unifier(Visitor):
     
   def __call__(self, t1, t2):
     #print 'Unifier({0})({1}, {2})'.format(self.vars, dump(t1), dump(t2))
+
+    if t1 is t2:
+      return True
+
     if isinstance(t1, Input):
       return self.unify(t1, t2)
     
@@ -416,8 +420,32 @@ class Unifier(Visitor):
     t2 = self.t2
     return t1.op == t2.op and self(t1.v1,t2.v1) and self(t1.v2,t2.v2)
 
-  def default(self, t1):
-    return False
+  def visit_ConversionOp(self, t1):
+    # FIXME: check for explicit types
+    t2 = self.t2
+    return t1.op == t2.op and self(t1.v, t2.v)
+
+  def visit_Icmp(self, t1):
+    t2 = self.t2
+
+    if t1.op == Icmp.Var or t2.op == Icmp.Var:
+      raise AliveError('Unifier: No support for general icmp matching ' +
+        str(t1) + '; ' + str(t2))
+
+    return t1.op == t2.op and self(t1.v1, t2.v1) and self(t1.v2, t2.v2)
+
+  def visit_Select(self, t1):
+    t2 = self.t2
+
+    return self(t1.c, t2.c) and self(t1.v1, t2.v1) and self(t1.v2, t2.v2)
+
+  def visit_ConstantVal(self, t1):
+    t2 = self.t2
+
+    return t1.val == t2.val
+
+  #def default(self, t1):
+  #  return False
 
 
 class Grafter(CopyBase):
@@ -696,7 +724,8 @@ def satisfiable(opt):
     res = s.check()
     
     if res == sat:
-      #print 'success:', s.model()
+      print 'success:', s.model()
+      alive.print_var_vals(s, srcv, tgtv, 'X', types)
       return True
     
   return False
@@ -771,6 +800,9 @@ def check_self_loop(opt):
         print 'UNSATISFIABLE'
     except Exception, e:
       print 'CAUGHT from satisfiable():', e
+
+def parse_transforms(input):
+  return [Transformation(*o) for o in parse_opt_file(input)]
 
 
 if __name__ == '__main__':
