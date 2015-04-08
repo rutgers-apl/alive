@@ -52,6 +52,30 @@ def all_identifiers(value):
 
   return value.visit(V())
 
+class UnacceptableArgument(AliveError):
+  def __init__(self, cls, arg, val, msg = ''):
+    self.cls = cls
+    self.arg = arg
+    self.val = val
+    self.msg = msg
+
+  def __repr__(self):
+    return 'UnacceptableArgument({0.cls!r}, {0.arg!r},'\
+           ' {0.val!r}, {0.msg!r})'.format(self)
+
+  def __str__(self):
+    msg = ', expected ' + self.msg if self.msg else ''
+
+    return 'Unacceptable argument for {0.cls} #{0.arg}: {0.val!r}{1}'.\
+      format(self, msg)
+
+def isConstExpr(val):
+  if isinstance(val, Input):
+    return val.name[0] == 'C'
+
+  return isinstance(val, Constant)
+
+
 class CopyBase(Visitor):
   def subtree(self, val):
     return self.default(val)
@@ -82,6 +106,16 @@ class CopyBase(Visitor):
                   self.operand(term.v1), self.operand(term.v2))
 
   # -- constants
+  @staticmethod
+  def _ensure_constant(val, cls, arg):
+    if isinstance(val, Input) and val.name[0] == 'C':
+      return val
+
+    if isinstance(val, Constant):
+      return val
+
+    raise UnacceptableArgument(cls, arg, val, 'constant')
+
   def visit_ConstantVal(self, val):
     return ConstantVal(val.val, copy_type(val.type))
   
@@ -89,14 +123,18 @@ class CopyBase(Visitor):
     return UndefVal(copy_type(val.type))
   
   def visit_CnstUnaryOp(self, val):
-    return CnstUnaryOp(val.op, self.subtree(val.v))
-  
+    return CnstUnaryOp(val.op,
+      self._ensure_constant(self.subtree(val.v), CnstUnaryOp, 1))
+
   def visit_CnstBinaryOp(self, val):
-    return CnstBinaryOp(val.op, self.subtree(val.v1), self.subtree(val.v2))
-  
+    return CnstBinaryOp(val.op,
+      self._ensure_constant(self.subtree(val.v1), CnstBinaryOp, 1),
+      self._ensure_constant(self.subtree(val.v2), CnstBinaryOp, 2))
+
   def visit_CnstFunction(self, val):
-    return CnstFunction(val.op, [self.operand(a) for a in val.args], 
-                        copy_type(val.type))
+    #FIXME: Alive currently doesn't check arguments to constant functions
+    return CnstFunction(val.op, [self.operand(a) for a in val.args],
+      copy_type(val.type))
   
   # -- predicates
   def visit_TruePred(self, term):
@@ -115,7 +153,15 @@ class CopyBase(Visitor):
     return BinaryBoolPred(term.op, self.subtree(term.v1), self.subtree(term.v2))
   
   def visit_LLVMBoolPred(self, term):
-    return LLVMBoolPred(term.op, [self.operand(a) for a in term.args])
+    args = []
+    for i,a in izip(count(1), term.args):
+      new = self.operand(a)
+      ok, msg = LLVMBoolPred.argAccepts(term.op, i, new)
+      if not ok:
+        raise UnacceptableArgument(LLVMBoolPred.opnames[term.op], i, new, msg)
+      args.append(new)
+
+    return LLVMBoolPred(term.op, args)
 
 
 
@@ -386,8 +432,14 @@ class Unifier(Visitor):
     #print 'unify', var, term
     if var in self.vars:
       return self(self.vars[var], term)
-    
-    #print '.. {0} := {1}'.format(dump(var),dump(term))
+
+    if isinstance(term, Input) and term.name[0] != 'C':
+      term, var = var, term
+
+    if var.name[0] == 'C' and isinstance(term, Instr):
+      return False
+
+    print '.. {0} := {1}'.format(dump(var),dump(term))
     self.vars[var] = term
     return True
     
@@ -402,7 +454,9 @@ class Unifier(Visitor):
     
     if isinstance(t2, Input):
       return self.unify(t2, t1)
-    
+
+    # FIXME: CopyOperand!
+
     if t1.__class__ is not t2.__class__:
       return False
     
@@ -410,8 +464,9 @@ class Unifier(Visitor):
     self.t2 = t2
     r = t1.visit(self)
     if r:
+      assert t2 not in self.vars
       self.vars[t2] = t1
-      #print '.. {0} := {1}'.format(dump(t2),dump(t1))
+      print '.. {0} := {1}'.format(dump(t2),dump(t1))
     self.t2 = old_t2
     return r
   
@@ -521,7 +576,7 @@ class Grafter(CopyBase):
     name = term.getName()
     while name in self.ids:
       name += '0'
-      # TODO: improve
+      # TODO: improve name generation
 
     new_term = Input(name, copy_type(term.type))
     self.ids[name] = new_term
@@ -553,11 +608,15 @@ def compose(op1, op2):
   graft = Grafter(unify.vars)
   new_s = graft(op1.src_root())
   
-  #print '\n-----\npre1'
-  pre1 = graft.subtree(op1.pre)
+  try:
+    #print '\n-----\npre1'
+    pre1 = graft.subtree(op1.pre)
   
-  #print '\n-----\npre2'
-  pre2 = graft.subtree(op2.pre)
+    #print '\n-----\npre2'
+    pre2 = graft.subtree(op2.pre)
+  except UnacceptableArgument, e:
+    sys.stderr.write('WARNING: caught ' + repr(e) + '\n')
+    return None
 
   src = copy(graft.ids)
   tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
@@ -614,9 +673,13 @@ def compose_off_first(op1, k, op2):
   
   newer_s = graft(op2.src_root())
   
-  # precondition
-  pre1 = graft.subtree(op1.pre)
-  pre2 = graft.subtree(op2.pre)
+  try:
+    # precondition
+    pre1 = graft.subtree(op1.pre)
+    pre2 = graft.subtree(op2.pre)
+  except UnacceptableArgument, e:
+    sys.stderr.write('WARNING: caught ' + repr(e) + '\n')
+    return None
   
   src = copy(graft.ids)
   tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
@@ -660,9 +723,13 @@ def compose_off_second(k, op1, op2):
   graft = Grafter(unify.vars)
   new_s = graft(op1.src_root())
   
-  # precondition
-  pre1 = graft.subtree(op1.pre)
-  pre2 = graft.subtree(op2.pre)
+  try:
+    # precondition
+    pre1 = graft.subtree(op1.pre)
+    pre2 = graft.subtree(op2.pre)
+  except UnacceptableArgument, e:
+    sys.stderr.write('WARNING: caught ' + repr(e) + '\n')
+    return None
   
   src = copy(graft.ids)
   tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
@@ -713,6 +780,7 @@ def satisfiable(opt):
     srcv = toSMT(opt.src_bb, opt.src, True)
     tgtv = toSMT(opt.tgt_bb, opt.tgt, False)
     pre_d, pre = opt.pre.toSMT(srcv)
+      # FIXME: this crashes occasionally. why?
     
     extra_cnstrs = pre_d + pre  # NOTE: not checking allocas
     
@@ -799,7 +867,8 @@ def check_self_loop(opt):
       else: 
         print 'UNSATISFIABLE'
     except Exception, e:
-      print 'CAUGHT from satisfiable():', e
+      import traceback
+      print 'CAUGHT from satisfiable():', traceback.format_exc(sys.exc_info())
 
 def parse_transforms(input):
   return [Transformation(*o) for o in parse_opt_file(input)]
@@ -813,4 +882,5 @@ if __name__ == '__main__':
     try:
       check_self_loop(o)
     except Exception, e:
-      print o.name, ': CAUGHT', e
+      import traceback
+      print o.name, ': CAUGHT', traceback.format_exc(sys.exc_info())
