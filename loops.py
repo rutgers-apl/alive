@@ -421,6 +421,48 @@ class Transformation(object):
 
 # ----
 
+class _OccursChecker(Visitor):
+  def __init__(self, var):
+    self.var = var
+
+  def visit_Input(self, t):
+    return t == self.var
+
+  def visit_CopyOperand(self, t):
+    return t.visit(self)
+
+  def visit_BinOp(self, t):
+    return t.v1.visit(self) or t.v2.visit(self)
+
+  def visit_ConversionOp(self, t):
+    return t.v.visit(self)
+
+  def visit_Icmp(self, t):
+    return t.v1.visit(self) or t.v2.visit(self)
+
+  def visit_Select(self, t):
+    return t.c.visit(self) or t.v1.visit(self) or t.v2.visit(self)
+
+  def visit_ConstantVal(self, t):
+    return False
+
+  def visit_UndefVal(self, t):
+    return False
+
+  def visit_CnstUnaryOp(self, t):
+    return t.v.visit(self)
+
+  def visit_CnstBinaryOp(self, t):
+    return t.v1.visit(self) or t.v2.visit(self)
+
+  def visit_CnstFunction(self, t):
+    return any(a.visit(self) for a in t.args)
+
+def occurs(var, term):
+  '''Return true if this variable occurs in the term'''
+
+  return term.visit(_OccursChecker(var))
+
 class Unifier(Visitor):
   def __init__(self, vars = None):
     if vars == None: vars = {}
@@ -437,6 +479,12 @@ class Unifier(Visitor):
       term, var = var, term
 
     if var.name[0] == 'C' and isinstance(term, Instr):
+      return False
+
+    if term in self.vars:
+      raise AliveError('Unifying already unified term!')
+
+    if occurs(var, term):
       return False
 
     #print '.. {0} := {1}'.format(dump(var),dump(term))
@@ -621,8 +669,8 @@ def compose(op1, op2):
     #print '\n-----\npre2'
     pre2 = graft.subtree(op2.pre)
   except UnacceptableArgument, e:
-    sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
-    return None
+    #sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
+    raise
 
   src = copy(graft.ids)
   tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
@@ -684,8 +732,9 @@ def compose_off_first(op1, k, op2):
     pre1 = graft.subtree(op1.pre)
     pre2 = graft.subtree(op2.pre)
   except UnacceptableArgument, e:
-    sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
-    return None
+    #sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
+    #return None
+    raise
   
   src = copy(graft.ids)
   tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
@@ -734,8 +783,9 @@ def compose_off_second(k, op1, op2):
     pre1 = graft.subtree(op1.pre)
     pre2 = graft.subtree(op2.pre)
   except UnacceptableArgument, e:
-    sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
-    return None
+    #sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
+    #return None
+    raise
   
   src = copy(graft.ids)
   tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
@@ -805,7 +855,7 @@ def satisfiable(opt):
   return False
   
 
-def all_bin_compositions(o1, o2):
+def all_bin_compositions(o1, o2, immediate=True):
   assert o1 is not o2
 
   try:
@@ -813,7 +863,9 @@ def all_bin_compositions(o1, o2):
     if o12: 
       yield o12
   except Exception, e:
-    print o1.name, '::', o2.name, 'CAUGHT', e
+    if immediate: 
+      raise
+    yield e
   
   regs = [r for r,v in o2.src.iteritems() if isinstance(v,Instr)]
   regs.pop()
@@ -822,7 +874,9 @@ def all_bin_compositions(o1, o2):
       o12 = compose_off_first(o1, r, o2)
       if o12: yield o12
     except Exception, e:
-      print o1.name, '::', o2.name, 'CAUGHT', e
+      if immediate:
+        raise
+      yield e
   
   regs = [r for r,v in o1.tgt.iteritems()
             if isinstance(v,Instr) and r not in o1.tgt_skip]
@@ -832,7 +886,9 @@ def all_bin_compositions(o1, o2):
       o12 = compose_off_second(r, o1, o2)
       if o12: yield o12
     except Exception, e:
-      print o1.name, '::', o2.name, 'CAUGHT', e
+      if immediate:
+        raise
+      yield e
 
 
 
