@@ -238,7 +238,7 @@ def copy_type(ty):
     return nty
   
   if isinstance(ty, ArrayType):
-    sys.stderr.write('WARNING: not copying array type {0}\n'.format(ty))
+    #sys.stderr.write('WARNING: not copying array type {0}\n'.format(ty))
     # FIXME: handle ArrayType better
     return ArrayType()
   
@@ -439,7 +439,7 @@ class Unifier(Visitor):
     if var.name[0] == 'C' and isinstance(term, Instr):
       return False
 
-    print '.. {0} := {1}'.format(dump(var),dump(term))
+    #print '.. {0} := {1}'.format(dump(var),dump(term))
     self.vars[var] = term
     return True
     
@@ -466,7 +466,7 @@ class Unifier(Visitor):
     if r:
       assert t2 not in self.vars
       self.vars[t2] = t1
-      print '.. {0} := {1}'.format(dump(t2),dump(t1))
+      #print '.. {0} := {1}'.format(dump(t2),dump(t1))
     self.t2 = old_t2
     return r
   
@@ -499,6 +499,11 @@ class Unifier(Visitor):
 
     return t1.val == t2.val
 
+  def visit_CnstFunction(self, t1):
+    t2 = self.t2
+    
+    return t1.op == t2.op and all(self(a1,a2) for (a1,a2) in izip(t1.args, t2.args))
+
   #def default(self, t1):
   #  return False
 
@@ -528,10 +533,11 @@ class Grafter(CopyBase):
     # check whether this term was unified
     if term in self.vars:
       #print '.' * self.depth,
-      #print '.. substitute', dump(term), ':=', dump(self.vars[term])
+      #print '< substitute', dump(term), ':=', dump(self.vars[term])
       #term = self.vars[term]
       return self.subtree(self.vars[term])
   
+    assert self.depth < 10
     self.depth += 1
     new_term = term.visit(self)
     self.depth -= 1
@@ -556,7 +562,7 @@ class Grafter(CopyBase):
     return self.done[term]
   
   def operand(self, term):
-    #print 'operand:', dump(term)
+    #print '.' * self.depth, 'operand:', dump(term)
     new_term = self.subtree(term)
 
     name = new_term.getUniqueName()
@@ -615,7 +621,7 @@ def compose(op1, op2):
     #print '\n-----\npre2'
     pre2 = graft.subtree(op2.pre)
   except UnacceptableArgument, e:
-    sys.stderr.write('WARNING: caught ' + repr(e) + '\n')
+    sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
     return None
 
   src = copy(graft.ids)
@@ -678,7 +684,7 @@ def compose_off_first(op1, k, op2):
     pre1 = graft.subtree(op1.pre)
     pre2 = graft.subtree(op2.pre)
   except UnacceptableArgument, e:
-    sys.stderr.write('WARNING: caught ' + repr(e) + '\n')
+    sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
     return None
   
   src = copy(graft.ids)
@@ -728,7 +734,7 @@ def compose_off_second(k, op1, op2):
     pre1 = graft.subtree(op1.pre)
     pre2 = graft.subtree(op2.pre)
   except UnacceptableArgument, e:
-    sys.stderr.write('WARNING: caught ' + repr(e) + '\n')
+    sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
     return None
   
   src = copy(graft.ids)
@@ -802,22 +808,31 @@ def satisfiable(opt):
 def all_bin_compositions(o1, o2):
   assert o1 is not o2
 
-  o12 = compose(o1, o2)
-  if o12: 
-    yield o12
+  try:
+    o12 = compose(o1, o2)
+    if o12: 
+      yield o12
+  except Exception, e:
+    print o1.name, '::', o2.name, 'CAUGHT', e
   
   regs = [r for r,v in o2.src.iteritems() if isinstance(v,Instr)]
   regs.pop()
   for r in regs:
-    o12 = compose_off_first(o1, r, o2)
-    if o12: yield o12
+    try:
+      o12 = compose_off_first(o1, r, o2)
+      if o12: yield o12
+    except Exception, e:
+      print o1.name, '::', o2.name, 'CAUGHT', e
   
   regs = [r for r,v in o1.tgt.iteritems()
             if isinstance(v,Instr) and r not in o1.tgt_skip]
   regs.pop()
   for r in regs:
-    o12 = compose_off_second(r, o1, o2)
-    if o12: yield o12
+    try:
+      o12 = compose_off_second(r, o1, o2)
+      if o12: yield o12
+    except Exception, e:
+      print o1.name, '::', o2.name, 'CAUGHT', e
 
 
 
@@ -834,41 +849,28 @@ def all_compositions(opts):
 def check_self_loop(opt):
   '''Check all satisfiable self-compositions.'''
   
-  print '\n-----\nExamining', opt.name
-
   opt_src_len = sum(1 for v in opt.src.itervalues() if isinstance(v, Instr))
   
   o2 = opt.copy()
-  for oo in all_bin_compositions(opt, o2):
-    print '\n'
-    oo.dump()
+  for oo in all_bin_compositions(opt, o2):    
+    print '\n-----\n', oo.name
     
     oo_src_len = sum(1 for v in oo.src.itervalues() if isinstance(v, Instr))
+
+    print opt_src_len, '->', oo_src_len
     
-    # FIXME: need to decide how to count this
-    oo_tgt_len = sum(1 for v in oo.tgt.itervalues() 
-                    if isinstance(v, Instr) and v.getName() not in oo.tgt_skip)
-    
-    print 'opt_src_len', opt_src_len
-    print 'oo_src_len', oo_src_len
-    print 'oo_tgt_len', oo_tgt_len
-    
-    if opt_src_len < oo_src_len:
-      print 'COMPOSITION INCREASES SOURCE'
-      continue
-    
-    #if oo_src_len > oo_tgt_len:
-    #  print 'DECREASING'
     
     try:
-      if satisfiable(oo):
-        print '\nSATISFIABLE'
+      if oo_src_len <= opt_src_len and satisfiable(oo):
+        print
         oo.dump()
-      else: 
-        print 'UNSATISFIABLE'
+
+        return True
     except Exception, e:
       import traceback
       print 'CAUGHT from satisfiable():', traceback.format_exc(sys.exc_info())
+  
+  return False
 
 def parse_transforms(input):
   return [Transformation(*o) for o in parse_opt_file(input)]
