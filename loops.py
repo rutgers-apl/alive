@@ -18,19 +18,19 @@ def dump(instr):
   return '<{0}>#{1}'.format(instr, id(instr))
 
 class Visitor(object):
-  def default(self, v):
+  def default(self, v, *args, **kw):
     raise AliveError('{1}: No default behavior for <{0}>'.format(v,
       type(self).__name__))
     
   def __getattr__(self, name):
     if name.startswith('visit_'):
-      return lambda v: self.default(v)
+      return lambda *v, **kw: self.default(*v, **kw)
     
     raise AttributeError
 
 
-def base_visit(obj, visitor):
-  return getattr(visitor, 'visit_' + obj.__class__.__name__)(obj)
+def base_visit(obj, visitor, *args, **kws):
+  return getattr(visitor, 'visit_' + obj.__class__.__name__)(obj, *args, **kws)
 
 # monkeypatch Value to handle visiting
 Value.visit = base_visit
@@ -471,9 +471,10 @@ class Unifier(Visitor):
     self.t2 = None
   
   def unify(self, var, term):
-    #print 'unify', var, term
+    #print 'unify', dump(var), dump(term)
     if var in self.vars:
       return self(self.vars[var], term)
+      # FIXME: should this just be a check that self.vars[var] is term?
 
     if isinstance(term, Input) and term.name[0] != 'C':
       term, var = var, term
@@ -508,48 +509,44 @@ class Unifier(Visitor):
     if t1.__class__ is not t2.__class__:
       return False
     
-    old_t2 = self.t2
-    self.t2 = t2
-    r = t1.visit(self)
+    r = t1.visit(self, t2)
     if r:
       assert t2 not in self.vars
       self.vars[t2] = t1
       #print '.. {0} := {1}'.format(dump(t2),dump(t1))
-    self.t2 = old_t2
+
     return r
   
-  def visit_BinOp(self, t1):
+  def visit_BinOp(self, t1, t2):
     # FIXME: handle flags
-    t2 = self.t2
     return t1.op == t2.op and self(t1.v1,t2.v1) and self(t1.v2,t2.v2)
 
-  def visit_ConversionOp(self, t1):
+  def visit_ConversionOp(self, t1, t2):
     # FIXME: check for explicit types
-    t2 = self.t2
     return t1.op == t2.op and self(t1.v, t2.v)
 
-  def visit_Icmp(self, t1):
-    t2 = self.t2
-
+  def visit_Icmp(self, t1, t2):
     if t1.op == Icmp.Var or t2.op == Icmp.Var:
       raise AliveError('Unifier: No support for general icmp matching ' +
         str(t1) + '; ' + str(t2))
 
     return t1.op == t2.op and self(t1.v1, t2.v1) and self(t1.v2, t2.v2)
 
-  def visit_Select(self, t1):
-    t2 = self.t2
-
+  def visit_Select(self, t1, t2):
     return self(t1.c, t2.c) and self(t1.v1, t2.v1) and self(t1.v2, t2.v2)
 
-  def visit_ConstantVal(self, t1):
-    t2 = self.t2
-
+  def visit_ConstantVal(self, t1, t2):
     return t1.val == t2.val
 
-  def visit_CnstFunction(self, t1):
-    t2 = self.t2
-    
+  #TODO visit_UndefVal
+
+  def visit_CnstUnaryOp(self, t1, t2):
+    return t1.op == t2.op and self(t1.v, t2.v)
+
+  def visit_CnstBinaryOp(self, t1, t2):
+    return t1.op == t2.op and self(t1.v1, t2.v2) and self(t1.v2, t2.v2)
+
+  def visit_CnstFunction(self, t1, t2):
     return t1.op == t2.op and all(self(a1,a2) for (a1,a2) in izip(t1.args, t2.args))
 
   #def default(self, t1):
