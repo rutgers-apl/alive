@@ -585,7 +585,9 @@ class Grafter(CopyBase):
       #term = self.vars[term]
       return self.subtree(self.vars[term])
   
-    assert self.depth < 10
+    if self.depth > 20:
+      raise AliveError('Grafter: depth exceeded')
+
     self.depth += 1
     new_term = term.visit(self)
     self.depth -= 1
@@ -615,7 +617,7 @@ class Grafter(CopyBase):
 
     name = new_term.getUniqueName()
     if name not in self.ids:
-      #print '.. ids[{0}] = {1}'.format(name, dump(new_term))
+      #print '.' * self.depth, 'ids[{0}] = {1}'.format(name, dump(new_term))
       self.ids[name] = new_term
     
     return new_term
@@ -644,7 +646,87 @@ def mk_PredAnd(p1,p2):
     return p1
   return PredAnd(p1,p2)
 
-def compose(op1, op2):
+def compose(op1, op2, tgt1_at = None, src2_at = None):
+  '''Create a new transformation combining op1 and op2.
+
+  If tgt1_at is not None, then match it to the root of op2.src.
+  If src2_at is not None, then match it to the root of op1.tgt.
+  At least one of tgt1_at and src2_at must be None.
+  '''
+  assert tgt1_at is None or src2_at is None
+
+  mroot1 = op1.tgt[op1.src_root().getName()] if tgt1_at is None else op1.tgt[tgt1_at]
+  mroot2 = op2.src_root() if src2_at is None else op2.src[src2_at]
+
+  # unify the specified sub-graphs
+  unify = Unifier()
+  match = unify(mroot1, mroot2)
+
+  if not match:
+    return None
+
+  #print 'compose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
+
+  graft = Grafter(unify.vars)
+
+  # copy op1.src, making the replacements found in unify
+  new_s = graft(op1.src_root())
+
+  if src2_at is not None:
+    # if we didn't match op1.tgt against the root of op2.src,
+    # then add the rest of op2.src
+
+    graft.done[mroot1] = new_s
+    new_s = graft(op2.src_root())
+
+  # make a new precondition
+  pre1 = graft.subtree(op1.pre)
+  pre2 = graft.subtree(op2.pre)
+  #FIXME: make sure this does not add new instructions
+
+  # gather all the operands defined when creating the src and pre
+  src = copy(graft.ids)
+  tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
+
+  src_bb = {'': collections.OrderedDict(
+    [(r,i) for r,i in src.iteritems() if isinstance(i, Instr)])}
+
+  if tgt1_at is not None:
+    # if we matched op2.src against a sub-value of op1.tgt,
+    # then we will need to graft the modified op2.tgt into op1.tgt
+    new_t = graft(op2.tgt[op2.src_root().getName()])
+    graft.done[mroot1] = new_t
+
+  # remove the root from graft's list of identifiers, 
+  # in order to graft the new tgt
+  rname = new_s.getName()
+  graft.ids.pop(rname)
+  tgt_skip.discard(rname)
+
+  # copy op2.tgt with the root matching the root of new_s
+  if tgt1_at is None:
+    old_tgt_root = rename_Instr(op2.tgt[op2.src_root().getName()], rname)
+  else:
+    old_tgt_root = rename_Instr(op1.tgt[op1.src_root().getName()], rname)
+
+  new_t = graft(old_tgt_root)
+
+  tgt = graft.ids
+  tgt_bb = {'': collections.OrderedDict(
+    [(r,i) for r,i in tgt.iteritems() if isinstance(i, Instr)])}
+
+  if tgt1_at is not None:
+    name = '({0}@{2};{1})'.format(op1.name, op2.name, tgt1_at)
+  elif src2_at is not None:
+    name = '({0};{1}@{2})'.format(op1.name, op2.name, src2_at)
+  else:
+    name = '({0};{1})'.format(op1.name, op2.name)
+
+  return Transformation(name, mk_PredAnd(pre1,pre2), src_bb, tgt_bb,
+    src, tgt, None, None, tgt_skip)
+
+# TODO: remove
+def old_compose(op1, op2):
   '''Create a new transformation combining op1 and op2'''
   
   t1 = op1.tgt[op1.src_root().getName()]
@@ -871,7 +953,8 @@ def all_bin_compositions(o1, o2, immediate=True):
   regs.pop()
   for r in regs:
     try:
-      o12 = compose_off_first(o1, r, o2)
+      #o12 = compose_off_first(o1, r, o2)
+      o12 = compose(o1, o2, src2_at = r)
       if o12: yield o12
     except Exception, e:
       if immediate:
@@ -883,7 +966,8 @@ def all_bin_compositions(o1, o2, immediate=True):
   regs.pop()
   for r in regs:
     try:
-      o12 = compose_off_second(r, o1, o2)
+      #o12 = compose_off_second(r, o1, o2)
+      o12 = compose(o1, o2, tgt1_at = r)
       if o12: yield o12
     except Exception, e:
       if immediate:
