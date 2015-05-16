@@ -473,8 +473,15 @@ class Unifier(Visitor):
   def unify(self, var, term):
     #print 'unify', dump(var), dump(term)
     if var in self.vars:
-      return self(self.vars[var], term)
-      # FIXME: should this just be a check that self.vars[var] is term?
+      #FIXME: determine whether any other cases exist
+      #return self(self.vars[var], term)
+      if isinstance(self.vars[var], Input):
+        return self.unify(self.vars[var], term)
+      if isinstance(term, Input):
+        return self.unify(term, self.vars[var])
+
+      #TODO: allow recursive unification of constant expressions?
+      return self.vars[var] is term
 
     if isinstance(term, Input) and term.name[0] != 'C':
       term, var = var, term
@@ -511,6 +518,7 @@ class Unifier(Visitor):
     
     r = t1.visit(self, t2)
     if r:
+      #FIXME: no longer sure why this is here
       assert t2 not in self.vars
       self.vars[t2] = t1
       #print '.. {0} := {1}'.format(dump(t2),dump(t1))
@@ -924,6 +932,7 @@ def satisfiable(opt):
     s = alive.tactic.solver()
     s.add(extra_cnstrs)
     #print 'checking', s
+    alive.gen_benchmark(s)
     res = s.check()
     
     if res == sat:
