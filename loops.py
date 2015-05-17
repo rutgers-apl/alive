@@ -572,6 +572,7 @@ class Grafter(CopyBase):
     self.done = {}    # old value -> new value
     self.ids = collections.OrderedDict()  # name -> new value
     self.depth = 0
+    self.allow_new_instrs = True
   
   def __call__(self, term):
     return self.operand(term)
@@ -621,7 +622,7 @@ class Grafter(CopyBase):
     new_term = self.subtree(term)
 
     name = new_term.getUniqueName()
-    if name not in self.ids:
+    if name not in self.ids and (not isinstance(new_term, Instr) or self.allow_new_instrs):
       #print '.' * self.depth, 'ids[{0}] = {1}'.format(name, dump(new_term))
       self.ids[name] = new_term
     
@@ -684,10 +685,17 @@ def compose(op1, op2, tgt1_at = None, src2_at = None):
     graft.done[mroot1] = new_s
     new_s = graft(op2.src_root())
 
+  graft.allow_new_instrs = False
+  #FIXME: this is a temporary patch to avoid having the precondition
+  # add new instructions to the source. This should probably be changed
+  # to have a separate list, though, to avoid name duplication
+
   # make a new precondition
   pre1 = graft.subtree(op1.pre)
   pre2 = graft.subtree(op2.pre)
   #FIXME: make sure this does not add new instructions
+  
+  graft.allow_new_instrs = True
 
   # gather all the operands defined when creating the src and pre
   src = copy(graft.ids)
