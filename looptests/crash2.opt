@@ -1,0 +1,15 @@
+Name: AddSub:1624
+%Op0 = or %A, %B
+%Op1 = xor %A, %B
+%r = sub %Op0, %Op1
+  =>
+%r = and %A, %B
+
+Name: AndOrXor:343
+Pre: C1 & C2 == C2 && (isPowerOf2OrZero(C2+1) || (isShiftedMask(C2) && MaskedValueIsZero(%B, (1 << (width(C2) - countLeadingZeros((C2 - 1) ^ C2)))-1)))
+%lhs = and %A, C1
+%Op = add %lhs, %B
+%r = and %Op, C2
+  =>
+%op = add %A, %B
+%r = and %op, C2

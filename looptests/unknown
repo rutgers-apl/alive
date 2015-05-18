@@ -1,0 +1,45 @@
+Name: AndOrXor:343
+Pre: C1 & C2 == C2 && (isPowerOf2OrZero(C2+1) || (isShiftedMask(C2) && MaskedValueIsZero(%B, (1 << (width(C2) - countLeadingZeros((C2 - 1) ^ C2)))-1)))
+%lhs = and %A, C1
+%Op = add %lhs, %B
+%r = and %Op, C2
+  =>
+%op = add %A, %B
+%r = and %op, C2
+
+Name: InstCombineShift: 270
+Pre: zext(C1+C2) >= width(C1)
+%Op0 = lshr %X, C1
+%r = lshr %Op0, C2
+  =>
+%r = 0
+
+
+; these next few cause type problems in the codegen
+Name: InstCombineShift: 274
+Pre: zext(C1+C2) < width(C1)
+%Op0 = lshr %X, C1
+%r = lshr %Op0, C2
+  =>
+%r = lshr %X, C1+C2
+
+Name: InstCombineShift: 573
+Pre: zext(C+C2) >= width(C)
+%Op0 = shl %X, C2
+%r = shl %Op0, C
+  =>
+%r = 0
+
+Name: InstCombineShift: 574
+Pre: zext(C+C2) >= width(C)
+%Op0 = ashr %X, C2
+%r = ashr %Op0, C
+  =>
+%r = ashr %X, width(C)-1
+
+Name: InstCombineShift: 577
+Pre: zext(C+C2) < width(C)
+%Op0 = shl %X, C2
+%r = shl %Op0, C
+  =>
+%r = shl %X, C+C2

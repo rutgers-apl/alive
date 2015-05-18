@@ -1,0 +1,12 @@
+Name: InstCombineShift: 812
+Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
+%r = ashr %Op0, C
+  =>
+%r = ashr exact %Op0, C
+
+
+Name: InstCombineShift: 821
+Pre: MaskedValueIsZero(%Op0, 1<<(width(%r)-1))
+%r = ashr %Op0, %Op1
+  =>
+%r = lshr %Op0, %Op1

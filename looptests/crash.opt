@@ -1,0 +1,16 @@
+Name: AddSub:1265
+Pre: WillNotOverflowSignedAdd(%x,trunc(C)) && (C & (-1 << (width(%x) - 1))) == 0
+%sx = sext %x
+%c = add %sx, C
+  =>
+%xy = add nsw %x, trunc(C)
+%c = sext %xy
+
+Name: AddSub:1278
+Pre: WillNotOverflowSignedAdd(%x,%y)
+%sx = sext %x
+%sy = sext %y
+%c = add %sx, %sy
+  =>
+%xy = add nsw %x, %y
+%c = sext %xy

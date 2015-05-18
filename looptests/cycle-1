@@ -1,0 +1,15 @@
+Name: AndOrXor:2429
+%op0 = and %x, %y
+%r = xor %op0, -1
+  =>
+%nx = xor %x, -1
+%ny = xor %y, -1
+%r = or %nx, %ny
+
+Name: AndOrXor:2247  (~A | ~B) == (~(A & B))
+%na = xor %A, -1
+%nb = xor %B, -1
+%r = or %na, %nb
+  =>
+%a = and %A, %B
+%r = xor %a, -1
