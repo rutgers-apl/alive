@@ -19,6 +19,8 @@ def compose_sequence(opts):
   for c in all_sequences_after(0, opts):
     print '\n-----'
     c.dump()
+    loop = check_self_loop(c)
+    print 'loops:', loop
 
 def test_sequence(input):
   compose_sequence(parse_transforms(input))
