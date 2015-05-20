@@ -15,9 +15,11 @@
 from language import *
 from codegen import *
 from itertools import chain
+import logging
 
 class BoolPred:
   def fixupTypes(self, types):
+    logging.getLogger('precondition').debug('fixing up %s', self)
     for attr in dir(self):
       a = getattr(self, attr)
       if isinstance(a, (Type, Value, BoolPred)):
@@ -248,7 +250,7 @@ class LLVMBoolPred(BoolPred):
     for i in range(len(args)):
       assert self.argAccepts(op, i+1, args[i])[0]
     self.op = op
-    self.args = args
+    self.args = tuple(args)
     if self.num_args[op] != len(args):
       raise ParseError('Wrong number of arguments (got %d, expected %d)' %\
                        (len(args), self.num_args[op]))

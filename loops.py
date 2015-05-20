@@ -3,14 +3,16 @@ from language import *
 from precondition import *
 from parser import parse_opt_file
 #from codegen import *
-from itertools import combinations, izip, count
-#from collections import defaultdict
+from itertools import combinations, izip, count, chain, imap
 from copy import copy
 import alive
-from pprint import pprint
+from pprint import pprint, pformat
+import logging
+import collections
 
 NAME, PRE, SRC_BB, TGT_BB, SRC, TGT, SRC_USED, TGT_USED, TGT_SKIP = range(9)
 
+logger = logging.getLogger(__name__)
 
 def dump(instr):
   if isinstance(instr, Instr) and hasattr(instr, 'name'):
@@ -36,6 +38,57 @@ def base_visit(obj, visitor, *args, **kws):
 # monkeypatch Value to handle visiting
 Value.visit = base_visit
 BoolPred.visit = base_visit
+
+
+class _DependencyFinder(Visitor):
+  def __init__(self, exclude = None):
+    self.uses = {}
+    self.exclude = exclude or set()
+
+  def default(self, v):
+    return set()
+
+  def __call__(self, v):
+    if v in self.exclude:
+      return set()
+
+    if v in self.uses:
+      return self.uses[v]
+
+    r = v.visit(self)
+    self.uses[v] = r
+    return r
+
+  def visit_BinOp(self, v):
+    return set.union(self(v.v1), self(v.v2), [v.v1, v.v2])
+
+  def visit_ConversionOp(self, v):
+    return set.union(self(v.v), [v.v])
+
+  def visit_Icmp(self, v):
+    return set.union(self(v.v1), self(v.v2), [v.v1, v.v2])
+
+  def visit_Select(self, v):
+    return set.union(self(v.c), self(v.v1), self(v.v2), [v.c, v.v1, v.v2])
+
+  def visit_CnstUnaryOp(self, v):
+    return set.union(self(v.v), [v.v])
+
+  def visit_CnstBinaryOp(self, v):
+    return set.union(self(v.v1), self(v.v2), [v.v1, v.v2])
+
+  def visit_CnstFunction(self, v):
+    return set.union(set(v.args), *(self(a) for a in v.args))
+
+def all_uses(value):
+  '''
+  Recursively walk value and its dependencies. Return a map from values to
+  sets of subvalues.
+  '''
+  find = _DependencyFinder()
+  find(value)
+  return find.uses
+
 
 def all_identifiers(value):
   class V(Visitor):
@@ -78,33 +131,46 @@ def isConstExpr(val):
 
 
 class CopyBase(Visitor):
-  def subtree(self, val):
-    return self.default(val)
+  logger = logger.getChild('CopyBase')
 
-  def operand(self, val):
-    return self.subtree(val)
+  def subtree(self, val, *xargs, **kws):
+    return self.default(val, *xargs, **kws)
+
+  def operand(self, val, *xargs, **kws):
+    return self.subtree(val, *xargs, **kws)
   
   # -- instructions
-  def visit_CopyOperand(self, val):
-    return CopyOperand(self.operand(val.v), copy_type(val.type))
+  def visit_CopyOperand(self, val, *xargs, **kws):
+    return CopyOperand(self.operand(val.v, *xargs, **kws), copy_type(val.type))
 
-  def visit_BinOp(self, val):
-    return BinOp(val.op, copy_type(val.type), self.operand(val.v1),
-            self.operand(val.v2), copy(val.flags))
+  def visit_BinOp(self, val, *xargs, **kws):
+    return BinOp(val.op, copy_type(val.type),
+            self.operand(val.v1, *xargs, **kws),
+            self.operand(val.v2, *xargs, **kws),
+            copy(val.flags))
 
-  def visit_ConversionOp(self, term):
-    return ConversionOp(term.op, copy_type(term.stype), self.operand(term.v),
+  def visit_ConversionOp(self, term, *xargs, **kws):
+    return ConversionOp(term.op, copy_type(term.stype),
+                        self.operand(term.v, *xargs, **kws),
                         copy_type(term.type))
 
-  def visit_Icmp(self, term):
+  def visit_Icmp(self, term, *xargs, **kws):
     op = term.opname if term.op == Icmp.Var else Icmp.opnames[term.op]
     
-    return Icmp(op, copy_type(term.stype), self.operand(term.v1),
-                self.operand(term.v2))
+    return Icmp(op, copy_type(term.stype),
+                self.operand(term.v1, *xargs, **kws),
+                self.operand(term.v2, *xargs, **kws))
 
-  def visit_Select(self, term):
-    return Select(copy_type(term.type), self.operand(term.c),
-                  self.operand(term.v1), self.operand(term.v2))
+  def visit_Select(self, term, *xargs, **kws):
+    c = self.operand(term.c, *xargs, **kws)
+    v1 = self.operand(term.v1, *xargs, **kws)
+    v2 = self.operand(term.v2, *xargs, **kws)
+
+#     if not isinstance(c.type, IntType):
+#       self.logger.info('visit_Select: narrowing type of %s', c)
+#       c.type = c.type.ensureIntType()
+
+    return Select(copy_type(term.type), c, v1, v2)
 
   # -- constants
   @staticmethod
@@ -117,46 +183,48 @@ class CopyBase(Visitor):
 
     raise UnacceptableArgument(cls, arg, val, 'constant')
 
-  def visit_ConstantVal(self, val):
+  def visit_ConstantVal(self, val, *xargs, **kws):
     return ConstantVal(val.val, copy_type(val.type))
   
-  def visit_UndefVal(self, val):
+  def visit_UndefVal(self, val, *xargs, **kws):
     return UndefVal(copy_type(val.type))
   
-  def visit_CnstUnaryOp(self, val):
+  def visit_CnstUnaryOp(self, val, *xargs, **kws):
     return CnstUnaryOp(val.op,
-      self._ensure_constant(self.subtree(val.v), CnstUnaryOp, 1))
+      self._ensure_constant(self.subtree(val.v, *xargs, **kws), CnstUnaryOp, 1))
 
-  def visit_CnstBinaryOp(self, val):
+  def visit_CnstBinaryOp(self, val, *xargs, **kws):
     return CnstBinaryOp(val.op,
-      self._ensure_constant(self.subtree(val.v1), CnstBinaryOp, 1),
-      self._ensure_constant(self.subtree(val.v2), CnstBinaryOp, 2))
+      self._ensure_constant(self.subtree(val.v1, *xargs, **kws), CnstBinaryOp, 1),
+      self._ensure_constant(self.subtree(val.v2, *xargs, **kws), CnstBinaryOp, 2))
 
-  def visit_CnstFunction(self, val):
+  def visit_CnstFunction(self, val, *xargs, **kws):
     #FIXME: Alive currently doesn't check arguments to constant functions
-    return CnstFunction(val.op, [self.operand(a) for a in val.args],
+    return CnstFunction(val.op, [self.operand(a, *xargs, **kws) for a in val.args],
       copy_type(val.type))
   
   # -- predicates
-  def visit_TruePred(self, term):
+  def visit_TruePred(self, term, *xargs, **kws):
     return term # FIXME?
   
-  def visit_PredNot(self, term):
-    return PredNot(self.subtree(term.v))
+  def visit_PredNot(self, term, *xargs, **kws):
+    return PredNot(self.subtree(term.v, *xargs, **kws))
   
-  def visit_PredAnd(self, term):
-    return PredAnd(*(self.subtree(a) for a in term.args))
+  def visit_PredAnd(self, term, *xargs, **kws):
+    return PredAnd(*(self.subtree(a, *xargs, **kws) for a in term.args))
   
-  def visit_PredOr(self, term):
-    return PredOr(*(self.subtree(a) for a in term.args))
+  def visit_PredOr(self, term, *xargs, **kws):
+    return PredOr(*(self.subtree(a, *xargs, **kws) for a in term.args))
     
-  def visit_BinaryBoolPred(self, term):
-    return BinaryBoolPred(term.op, self.subtree(term.v1), self.subtree(term.v2))
+  def visit_BinaryBoolPred(self, term, *xargs, **kws):
+    return BinaryBoolPred(term.op,
+      self.subtree(term.v1, *xargs, **kws),
+      self.subtree(term.v2, *xargs, **kws))
   
-  def visit_LLVMBoolPred(self, term):
+  def visit_LLVMBoolPred(self, term, *xargs, **kws):
     args = []
     for i,a in izip(count(1), term.args):
-      new = self.operand(a)
+      new = self.operand(a, *xargs, **kws)
       ok, msg = LLVMBoolPred.argAccepts(term.op, i, new)
       if not ok:
         raise UnacceptableArgument(LLVMBoolPred.opnames[term.op], i, new, msg)
@@ -247,11 +315,14 @@ def copy_type(ty):
 
 # ----
 
+class AliveTypeError(AliveError):
+  pass
+
 class Transformation(object):
   '''Represents a single Alive transformation (optimization).'''
   
   def __init__(self, name, pre, src_bb, tgt_bb, src, tgt, src_used, tgt_used,
-                tgt_skip, aux = None):
+                tgt_skip):
     self.name     = name
     self.pre      = pre
     self.src_bb   = src_bb
@@ -261,7 +332,6 @@ class Transformation(object):
     self.src_used = src_used
     self.tgt_used = tgt_used
     self.tgt_skip = tgt_skip
-    self.aux      = aux
 
   def src_root(self):
     '''Returns the root value of the source (i.e., the last instruction)'''
@@ -277,6 +347,26 @@ class Transformation(object):
     '''Returns the root value of the target'''
 
     return self.tgt[self.src_root().getName()]
+
+  def __str__(self):
+    def lines(bbs, skip):
+      for bb, instrs in bbs.iteritems():
+        if bb != '':
+          yield '%s:' % bb
+
+        for k,v in instrs.iteritems():
+          if k in skip:
+            continue
+          k = str(k)
+          if k[0] == '%':
+            yield '  %s = %s' % (k,v)
+          else:
+            yield '  %s' % v
+
+    return 'Name: {0}\nPre: {1}\n{2}\n=>\n{3}'.format(
+      self.name, str(self.pre),
+      '\n'.join(lines(self.src_bb, set())),
+      '\n'.join(lines(self.tgt_bb, self.tgt_skip)))
 
   def dump(self):
     print 'Name:', self.name
@@ -361,7 +451,7 @@ class Transformation(object):
     s = SolverFor('QF_LIA')
     s.add(type_pre)
     if s.check() != sat:
-      raise AliveError(self.name + ': Precondition does not type check')
+      raise AliveTypeError(self.name + ': Precondition does not type check')
 
     # Only one type per variable/expression in the precondition is required.
     for v in s.model().decls():
@@ -370,12 +460,12 @@ class Transformation(object):
     s.add(type_src)
     unregister_pick_one_type(alive.get_smt_vars(type_src))
     if s.check() != sat:
-      raise AliveError(self.name + ': Source program does not type check')
+      raise AliveTypeError(self.name + ': Source program does not type check')
 
     s.add(type_tgt)
     unregister_pick_one_type(alive.get_smt_vars(type_tgt))
     if s.check() != sat:
-      raise AliveError(self.name + 
+      raise AliveTypeError(self.name + 
         ': Source and Target programs do not type check')
 
     # Pointers are assumed to be either 32 or 64 bits
@@ -470,283 +560,114 @@ def occurs(var, term):
 
   return term.visit(_OccursChecker(var))
 
-class Unifier(Visitor):
-  def __init__(self, vars = None):
-    if vars == None: vars = {}
-
-    self.vars = vars
-    self.t2 = None
-  
-  def unify(self, var, term):
-    #print 'unify', dump(var), dump(term)
-    if var in self.vars:
-      #FIXME: determine whether any other cases exist
-      #return self(self.vars[var], term)
-      if isinstance(self.vars[var], Input):
-        return self.unify(self.vars[var], term)
-      if isinstance(term, Input):
-        return self.unify(term, self.vars[var])
-
-      #TODO: allow recursive unification of constant expressions?
-      return self.vars[var] is term
-
-    if isinstance(term, Input) and term.name[0] != 'C':
-      term, var = var, term
-
-    if var.name[0] == 'C' and isinstance(term, Instr):
-      return False
-
-    if term in self.vars:
-      raise AliveError('Unifying already unified term!')
-
-    if occurs(var, term):
-      return False
-
-    #print '.. {0} := {1}'.format(dump(var),dump(term))
-    self.vars[var] = term
-    return True
-    
-  def __call__(self, t1, t2):
-    #print 'Unifier({0})({1}, {2})'.format(self.vars, dump(t1), dump(t2))
-
-    if t1 is t2:
-      return True
-
-    if isinstance(t1, Input):
-      return self.unify(t1, t2)
-    
-    if isinstance(t2, Input):
-      return self.unify(t2, t1)
-
-    # FIXME: CopyOperand!
-
-    if t1.__class__ is not t2.__class__:
-      return False
-    
-    r = t1.visit(self, t2)
-    if r:
-      #FIXME: no longer sure why this is here
-      assert t2 not in self.vars
-      self.vars[t2] = t1
-      #print '.. {0} := {1}'.format(dump(t2),dump(t1))
-
-    return r
-  
-  def visit_BinOp(self, t1, t2):
-    # FIXME: handle flags
-    return t1.op == t2.op and self(t1.v1,t2.v1) and self(t1.v2,t2.v2)
-
-  def visit_ConversionOp(self, t1, t2):
-    # FIXME: check for explicit types
-    return t1.op == t2.op and self(t1.v, t2.v)
-
-  def visit_Icmp(self, t1, t2):
-    if t1.op == Icmp.Var or t2.op == Icmp.Var:
-      raise AliveError('Unifier: No support for general icmp matching ' +
-        str(t1) + '; ' + str(t2))
-
-    return t1.op == t2.op and self(t1.v1, t2.v1) and self(t1.v2, t2.v2)
-
-  def visit_Select(self, t1, t2):
-    return self(t1.c, t2.c) and self(t1.v1, t2.v1) and self(t1.v2, t2.v2)
-
-  def visit_ConstantVal(self, t1, t2):
-    return t1.val == t2.val
-
-  #TODO visit_UndefVal
-
-  def visit_CnstUnaryOp(self, t1, t2):
-    return t1.op == t2.op and self(t1.v, t2.v)
-
-  def visit_CnstBinaryOp(self, t1, t2):
-    return t1.op == t2.op and self(t1.v1, t2.v2) and self(t1.v2, t2.v2)
-
-  def visit_CnstFunction(self, t1, t2):
-    return t1.op == t2.op and all(self(a1,a2) for (a1,a2) in izip(t1.args, t2.args))
-
-  #def default(self, t1):
-  #  return False
-  
-
-class Grafter(CopyBase):
-  '''Make a new instruction tree with operand identifier map, substituting
-  inputs according to the provided table.'''
-  
-  def __init__(self, vars = None):
-    if vars == None: vars = {}
-
-    self.vars = vars  # old value -> old value
-    self.done = {}    # old value -> new value
-    self.ids = collections.OrderedDict()  # name -> new value
-    self.depth = 0
-    self.allow_new_instrs = True
-  
-  def __call__(self, term):
-    return self.operand(term)
-  
-  def subtree(self, term):
-    #print '.' * self.depth,
-    #print 'subtree:', dump(term), 'Done', term in self.done, 'Var', term in self.vars
-    
-    if term in self.done:
-      return self.done[term]
-
-    # check whether this term was unified
-    if term in self.vars:
-      #print '.' * self.depth,
-      #print '< substitute', dump(term), ':=', dump(self.vars[term])
-      #term = self.vars[term]
-      return self.subtree(self.vars[term])
-  
-    if self.depth > 20:
-      raise AliveError('Grafter: depth exceeded')
-
-    self.depth += 1
-    new_term = term.visit(self)
-    self.depth -= 1
-    #print '.. visit <=', dump(new_term)
-    
-    #if not hasattr(term, 'name'):
-    #  print 'NO NAME:', term
-    #  assert False
-    
-    if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
-      name = term.getName()
-      while name in self.ids:
-        name += '0'
-
-      new_term.setName(name)
-    
-    self.done[term] = new_term
-    
-    #print '.' * self.depth,
-    #print 'subtree <=', dump(self.done[term])
-    
-    return self.done[term]
-  
-  def operand(self, term):
-    #print '.' * self.depth, 'operand:', dump(term)
-    new_term = self.subtree(term)
-
-    name = new_term.getUniqueName()
-    if name not in self.ids and (not isinstance(new_term, Instr) or self.allow_new_instrs):
-      #print '.' * self.depth, 'ids[{0}] = {1}'.format(name, dump(new_term))
-      self.ids[name] = new_term
-    
-    return new_term
-
-  def visit_Input(self, term):
-    #print 'visit_Input', dump(term), '=>', self.vars.get(term, None)
-
-    if term in self.vars:
-      return self.subtree(self.vars[term])
-    
-    # this is a new input, so we need a fresh name
-    name = term.getName()
-    while name in self.ids:
-      name += '0'
-      # TODO: improve name generation
-
-    new_term = Input(name, copy_type(term.type))
-    self.ids[name] = new_term
-    return new_term
-
-
 def is_const(value):
   return isinstance(value, Constant) or (isinstance(value, Input) and value.name[0] == 'C')
 
-class Matcher(Visitor):
+class Uncomposable(AliveError):
+  pass
+
+# --
+
+PATTERN = 0
+CODE = 1
+
+class EquivalenceClass(object):
+  '''
+  Stores (sort,value) keys in equivalence classes. Uses a disjoint subset structure.
+  '''
+  #TODO: efficiency
+  #TODO: really, this could be generalized to arbitrary keys.
+  #      is it worth the trouble of keeping the pattern and code values in different sets?
+
+  logger = logger.getChild('EquivalenceClass')
+
   def __init__(self):
-    self.cvars = {}  # code input -> (isCode, code value or pattern instr))
-    self.pvars = {}  # pattern input -> code value
-    self.equalities = []  # (code cexpr, code cexpr) list
+    # values are stored as (sort, Value) pairs, to keep
+    # code and pattern values distinct
+    # each input is mapped to an equivalence class by a chain
+    # of links in parent. the root is indicated by None
+    self._parent = {}
+    self._eqs = {}
 
-  def chase(self, var):
-    'Recursively look up a code input'
-    if var not in self.cvars:
-      return (True, var)
+  def __contains__(self, key):
+    return key in self._parent
 
-    (isCode, term) = self.cvars[var]
-    if isCode:
-      return self.chase(term)
-    
-    return (isCode, term)
-  
-  def unifyCode(self, code1, code2):
-    '''If one or both are unbound variables, bind them.
-    
-    Instructions only unify if identical.
-    '''
-    #print 'unify', dump(code1), dump(code2)
-    if isinstance(code1, Input) and not occurs(code1, code2):
-      return self.bindCVar(code1, True, code2)
-    
-    if isinstance(code2, Input) and not occurs(code2, code1):
-      return self.bindCVar(code2, True, code1)
-    
-    if is_const(code1) and is_const(code2):
-      self.equalities.append((code1, code2))
-      return True
-    
-    return code1 is code2
-  
-  def bindCVar(self, var, isCode, term):
-    if not isCode and isinstance(term, Input):
-      raise AliveError('Matcher.bindCVar: attempt bind to an input')
-  
-    if var in self.cvars:
-      (isCode1, term1) = self.chase(var)
-      
-      if isCode and isCode1:
-        return self.unifyCode(term1, term)
-        
-      raise AliveError('Matcher.bindCVar: incomplete')
-    
-    if var.name[0] == 'C' and not isinstance(term, Constant):
-      return False
-    
-    if var is term:
-      raise AliveError('About to create a circular link!')
-    
-    self.cvars[var] = (isCode, term)
-    return True
-  
-  def bindPVar(self, var, code):
-    'Bind a pattern input to a code value'
-    
-    (isCode, term) = self.chase(code)
-    if not isCode:
-      raise AliveError('Matcher.bindPVar: unify patterns')
+  def key_reps(self):
+    for (sort,value) in self._parent:
+      rep = self.rep(sort, value)
+      yield ((sort,value),rep)
 
-    if var in self.pvars:
-      return self.unifyCode(self.pvars[var], term)
+  def class_items(self):
+    return self._eqs.iteritems()
+
+  def reps(self):
+    return self._eqs.iterkeys()
+
+  def rep(self, sort, value, ensure=False):
+    key = (sort, value)
     
-    if var.name[0] != 'C':
-      self.pvars[var] = term
-      return True
+    if key not in self._parent:
+      if not ensure:
+        raise KeyError(key)
 
-    if isinstance(term, Constant) or (isinstance(term, Input) and term.name[0] == 'C'):
-      self.pvars[var] = term
-      return True
+      self._parent[key] = None
+      eq = (set(), set())
+      eq[sort].add(value)
+      self._eqs[key] = eq
+      return key
+
+    while self._parent[key] is not None:
+      key = self._parent[key]
+
+    return key
+
+  def eqs(self, sort, value):
+    rep = self.rep(sort, value)
+    return self._eqs[rep]
+
+  def unify(self, pat, code):
+    self.logger.info('unify |%s| |%s|', pat, code)
+
+    prep = self.rep(PATTERN, pat, ensure=True)
+    crep = self.rep(CODE, code, ensure=True)
     
-    if isinstance(term, Input):
-      self.cvars[term] = (False, var)
+    if self.logger.isEnabledFor(logging.DEBUG):
+      self.logger.debug('prep=%s; crep=%s', prep, crep)
+      self.logger.debug('classes\n' + pformat(self._eqs, indent=2))
 
-    return False
+    if prep == crep:
+      self.logger.info('already unified')
+      return
 
-  
+    self.logger.debug('removing %s', crep)
+    self._parent[crep] = prep
+    ceq = self._eqs.pop(crep)
+    peq = self._eqs[prep]
+
+    peq[PATTERN].update(ceq[PATTERN])
+    peq[CODE].update(ceq[CODE])
+
+    self.logger.debug('updated %s to %s', prep, peq)
+
+class Matcher(Visitor):
+  '''
+  Determine if code matches pattern.
+  '''
+
+  logger = logger.getChild('Matcher')
+
+  def __init__(self, eqs):
+    self.eqs = eqs
+
   def __call__(self, pattern, code):
-#     print 'match', dump(pattern), dump(code)
-    if isinstance(pattern, Input):
-      return self.bindPVar(pattern, code)
-    if isinstance(code, Input):
-      return self.bindCVar(code, False, pattern)
-    
-    # pattern and code are both instrs or constants
-    # note that pattern can not be a constant expression
-    if pattern.__class__ != code.__class__:
+    self.logger.info('matching |%s| |%s|', pattern, code)
+    if isinstance(pattern, Input) or isinstance(code, Input):
+      self.eqs.unify(pattern, code)
+      return True
+
+    if pattern.__class__ is not code.__class__:
       return False
-    
+
     return pattern.visit(self, code)
 
   def visit_BinOp(self, pat, code):
@@ -754,199 +675,352 @@ class Matcher(Visitor):
       and self(pat.v1, code.v1) and self(pat.v2, code.v2)
 
   def visit_ConversionOp(self, pat, code):
-    # FIXME: need to handle types
+    # TODO: handle types?
     return pat.op == code.op and self(pat.v, code.v)
   
   def visit_Icmp(self, pat, code):
     if pat.op == Icmp.Var or code.op == Icmp.Var:
-      raise AliveError('Matcher: No support for general icmp matching')
-    
+      raise AliveError('Matcher: general icmp matching unsupported')
+
     return pat.op == code.op and self(pat.v1, code.v1) and self(pat.v2, code.v2)
 
   def visit_Select(self, pat, code):
-    return self(pat.c, code.c) and self(pat.v1, code.v1) and self(pat.v2, code.v2)
+    return self(pat.c, code.c) and self(pat.v1, code.v1) \
+      and self(pat.v2, code.v2)
   
+  # TODO: other instructions
+
   def visit_ConstantVal(self, pat, code):
     return pat.val == code.val
-  
-  def visit_UndefVal(self, pat, code):
-    raise AliveError('Matcher: no support for undef')
 
-class PatternGrafter(CopyBase):
-  def __init__(self, graft):
-    self.graft = graft
-  
-  def operand(self, term):
-    new_term = self.subtree(term)
-    
-    name = new_term.getUniqueName()
-    if name not in self.graft.ids:
-      self.graft.ids[name] = new_term
-    
-    return new_term
-  
-  def subtree(self, term):
-    print '.' * self.graft.depth, 'pat subtree', dump(term),
-    print '| done' if term in self.graft.pdone else ('| var' if term in self.graft.pvars else '')
+  # NOTE: pattern should not contain constant expressions
 
-    if term in self.graft.pdone:
-      return self.graft.pdone[term]
-    
-    if term in self.graft.pvars:
-      return CodeGrafter(self.graft).subtree(self.graft.pvars[term])
+# --
 
-    # make sure we don't put a constant expression in the source
-    if self.graft.phase == self.graft.Source and isinstance(term, Constant) \
-      and not isinstance(term, ConstantVal):
-      #FIXME: undef?
-      i = 9
-      n = 'C'
-      while n in self.graft.ids:
-        i += 1
-        n = 'C' + str(i)
-      
-      new_c = Input(n, IntType())
-      self.graft.equalities.append(BinaryBoolPred(0, new_c, term))
-      self.graft.pdone[term] = new_c
-      return new_c
+class Grafter(CopyBase):
+  logger = logger.getChild('Grafter')
 
-    
-    self.graft.depth += 1
-    if self.graft.depth > 20:
-      raise AliveError('Grafter: depth exceeded')
-    
-    new_term = term.visit(self)
-    self.graft.depth -= 1
-    
-    if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
-      name = term.getName()
-      while name in self.graft.ids:
-        name += '0'
-      
-      new_term.setName(name)
-    
-    self.graft.pdone[term] = new_term
-    return new_term
-
-  def visit_Input(self, term):
-    if term in self.graft.pvars:
-      # can this ever happen?
-      return CodeGrafter(self.graft).subtree(term)
-    
-    name = term.getName()
-    while name in self.graft.ids:
-      name += '0'
-    new_term = Input(name, copy_type(term.type))
-    self.graft.ids[name] = new_term
-    return new_term
-
-class Uncomposable(AliveError):
-  pass
-
-class CodeGrafter(CopyBase):
-  def __init__(self, graft):
-    self.graft = graft
-  
-  def operand(self, term):
-    new_term = self.subtree(term)
-    
-    name = new_term.getUniqueName()
-    if name not in self.graft.ids:
-      self.graft.ids[name] = new_term
-    
-    return new_term
-  
-  def subtree(self, term):
-    print '.' * self.graft.depth, 'code subtree', dump(term),
-    print '| done' if term in self.graft.cdone else ('| var' if term in self.graft.cvars else ''),
-    print '| unavailable' if term in self.graft.unavailable else ''
-    
-    if term in self.graft.unavailable:
-      raise Uncomposable()
-
-    if term in self.graft.cdone:
-      return self.graft.cdone[term]
-    
-    if term in self.graft.cvars:
-      (isCode, term) = self.graft.cvars[term]
-      while isCode and term in self.graft.cvars:
-        (isCode, term) = self.graft.cvars[term]
-      if isCode:
-        return self.subtree(term)
-      
-      return PatternGrafter(self.graft).subtree(term)
-    
-    # make sure we don't put a constant expression in the source
-    if self.graft.phase == self.graft.Source and isinstance(term, Constant) \
-      and not isinstance(term, ConstantVal):
-      #FIXME: undef?
-      i = 9
-      n = 'C'
-      while n in self.graft.ids:
-        i += 1
-        n = 'C' + str(i)
-      
-      new_c = Input(n, IntType())
-      self.graft.equalities.append(BinaryBoolPred(0, new_c, term))
-      self.graft.cdone[term] = new_c
-      return new_c
-      
-    
-    self.graft.depth += 1
-    if self.graft.depth > 20:
-      raise AliveError('Grafter: depth exceeded')
-    
-    new_term = term.visit(self)
-    self.graft.depth -= 1
-    
-    if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
-      name = term.getName()
-      while name in self.graft.ids:
-        name += '0'
-      
-      new_term.setName(name)
-    
-    self.graft.cdone[term] = new_term
-    return new_term
-
-  def visit_Input(self, term):
-    if term in self.graft.cvars:
-      # can this ever happen?
-      raise AliveError('Grafter: unexpected visit_Input({})'.format(term.name)) 
-
-    name = term.getName()
-    while name in self.graft.ids:
-      name += '0'
-    new_term = Input(name, copy_type(term.type))
-    self.graft.ids[name] = new_term
-    return new_term
-
-
-class NewGrafter(object):
-  '''Make a new instruction tree with operand identifier map, substituting
-  inputs according to the provided table.'''
-  
-  Source = 0
-  Target = 1
-  Precondition = 2
-
-  def __init__(self, pvars, cvars, unavailable):
-    self.pvars = pvars  # pat var -> code value
-    self.cvars = cvars  # code var -> (True, code var) | (False, pat instr)
-    self.unavailable = unavailable  # code values which don't exist yet
-
-    self.pdone = {} # pat value -> new value
-    self.cdone = {} # code value -> new value
+  def __init__(self, replace):
+    self.replace = replace
     self.ids = collections.OrderedDict()
+    self.done = {}
     self.depth = 0
-    self.phase = NewGrafter.Source
-    self.equalities = []
+
+  def operand(self, term, sort):
+    new_term = self.subtree(term, sort)
+    
+    name = new_term.getUniqueName()
+    if name not in self.ids:
+      self.logger.debug('Adding id %s := %s', name, new_term)
+      self.ids[name] = new_term
+    
+    return new_term
+
+  def subtree(self, term, sort):
+    self.logger.debug('(%s) subtree |%s| %s', self.depth, term, sort)
+    key = (sort,term)
+    if key in self.done:
+      return self.done[key]
+    
+    if key in self.replace:
+      self.logger.debug('substituting %s -> %s', key, self.replace[key])
+      return self.subtree(self.replace[key][1], self.replace[key][0])
+    
+    self.depth += 1
+    if self.depth > 20:
+      raise AliveError('Grafter: depth exceeded')
+
+    new_term = term.visit(self, sort)
+    self.depth -= 1
+    
+    if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
+      name = term.getName()
+      i = 0
+      while name in self.ids:
+        i += 1
+        name = term.getName() + str(i)
+      
+      new_term.setName(name)
+    
+    self.done[key] = new_term
+    return new_term
+
+  def visit_Input(self, term, sort):
+    if (sort,term) in self.replace:
+      raise AliveError('Grafter: unexpected visit_Input({},{})'.format(term,sort))
+
+    name = term.getName()
+    i = 0
+    while name in self.ids:
+      i += 1
+      name = term.getName() + str(i)
+
+    new_term = Input(name, copy_type(term.type))
+    self.ids[name] = new_term
+    return new_term
+
+# --
+
+def _cycle_check(eqs, code_uses, pat_uses):
+  '''
+  Used by compose to find cycles. Basic DFS, except the arcs are 
+  determined by uses and eqs.
+  '''
   
-  def with_pattern(self, term):
-    return PatternGrafter(self).operand(term)
+  log = logger.getChild('_cycle_check')
+
+  done = {} # False when key is in progress, True when complete
+
+  def search(rep):
+    log.info('searching %s', rep)
+    log.debug('done: %s', done)
+
+    if rep in done:
+      return not done[rep]
+
+    done[rep] = False
+    (pvals,cvals) = eqs.eqs(*rep)
+
+    log.debug('pvals: %s', pvals)
+    log.debug('cvals: %s', cvals)
+
+    puses = imap(lambda n: (PATTERN,n), chain.from_iterable(pat_uses[p] for p in pvals))
+    cuses = imap(lambda n: (CODE,n), chain.from_iterable(code_uses[p] for p in cvals))
+
+    cycle = any(search(eqs.rep(*k)) for k in chain(puses,cuses) if k in eqs)
+    done[rep] = True
+    return cycle
+
+  return any(search(rep) for rep in eqs.reps() if rep not in done)
+
+def compose(op1, op2, code_at = None, pattern_at = None):
+  '''Create a new transformation combining op1 and op2.
+
+  If code_at is not None, then match pattern to the root of op1.tgt.
+  If pattern_at is not None, then match code to the root of op2.src.
+  At least one of code_at and pattern_at must be None.
+  '''
+  assert code_at is None or pattern_at is None
+
+  log = logger.getChild('compose')
+  log.info('compose(%s, %s, %s, %s)', op1.name, op2.name, code_at, pattern_at)
+  log.debug('op1:\n%s', op1)
+  log.debug('op2:\n%s', op2)
+
+
+  # determine matching roots
+  code = op1.tgt[code_at] if code_at else op1.tgt_root()
+  pat  = op2.src[pattern_at] if pattern_at else op2.src_root()
+
+  # obtain all bindings
+  eqs = EquivalenceClass()
+  match = Matcher(eqs)
+  if not match(pat, code):
+    log.info('reject: No match')
+    return None
+
+  if log.isEnabledFor(logging.DEBUG):
+    log.debug('equivalence classes\n  ' + pformat(eqs._eqs, indent=2))
+
+  # check validity of equivalences
+  # ------------------------------
+
+  # cycle check
+  code_uses = all_uses(code)
+  pat_uses = all_uses(pat)
+  if log.isEnabledFor(logging.DEBUG):
+    log.debug('\ncode_uses:\n' + pformat(code_uses, indent=2)
+      + '\npat_uses:\n' + pformat(pat_uses, indent=2))
+
+  if _cycle_check(eqs, code_uses, pat_uses):
+    log.info('reject: unifications form a cycle')
+    return None
+
+  pre3 = []
+  rep_replace = {}
+  replace = {}
+  for rep, (pvals, cvals) in eqs.class_items():
+    log.debug('checking %s', rep)
+
+    cinstr = tuple(v for v in cvals if isinstance(v, Instr))
+    if len(cinstr) > 1:
+      log.info('reject: unified distinct code instrs\n%s', cinstr)
+      return None
+
+    pinstr = tuple(v for v in pvals if isinstance(v, Instr))
+    if len(pinstr) > 1:
+      log.warning('reject: unified distinct pattern instrs. bailing.\n%s\n%s\n%s', pinstr, op1, op2)
+      return None
+
+    if len(cinstr) + len(pinstr) > 1:
+      log.warning('reject: indirectly unified pattern and code. bailing.\n%s\n%s\n%s\n%s', pinstr, cinstr, op1, op2)
+      return None
+
+    const = tuple((CODE,v) for v in cvals if is_const(v)) \
+      + tuple((PATTERN,v) for v in pvals if is_const(v))
+
+    if const and len(pinstr) + len(cinstr) > 0:
+      log.info('reject: unified constant and instr')
+      return None
+
+    # find the replacement
+    if cinstr:
+      rep_replace[rep] = (CODE, cinstr[0])
+
+      # check whether this instruction uses any cexprs
+      cexprs = tuple(v for v in code_uses[cinstr[0]]
+                      if v not in eqs and isinstance(v, Constant)
+                        and not isinstance(v, ConstantVal))
+
+      if not cexprs:
+        continue
+
+      log.debug('code instruction %s uses cexprs %s', cinstr[0], cexprs)
+
+      sub_cexprs = set.union(*(code_uses[e] for e in cexprs))
+
+      log.debug('sub_cexprs %s', sub_cexprs)
+
+      for cexpr in cexprs:
+        if cexpr in sub_cexprs: continue
+
+        log.info('new constant for %s', cexpr)
+        new_c = Input('C0', IntType())
+        pre3.append(BinaryBoolPred(0, new_c, cexpr))
+        replace[(CODE,cexpr)] = (CODE, new_c)
+
+    elif pinstr:
+      rep_replace[rep] = (PATTERN, pinstr[0])
+    elif const:
+      # pvals contains only inputs or literals
+      # cvals contains inputs or cexprs
+
+      # 1. make sure all literals agree
+      lits = set(v.val for s,v in const if isinstance(v, ConstantVal))
+      if len(lits) > 1:
+        log.info('unified distinct literals')
+        return None
+
+      # 2. constant expressions
+      cexprs = tuple(v for v in cvals if isinstance(v, Constant) and not isinstance(v, ConstantVal))
+      if cexprs:
+        if lits:
+          new_c = ConstantVal(lits.pop(), IntType())
+        else:
+          new_c = Input('C0', IntType())
+
+        for c in cexprs:
+          replace[(CODE,c)] = (CODE,new_c)
+          pre3.append(BinaryBoolPred(0, new_c, c))
+
+        rep_replace[rep] = (CODE,new_c)
+        continue
+
+      # 2a. if there is only one literal, use it
+      if lits:
+        rep_replace[rep] = (CODE, ConstantVal(lits.pop(), IntType()))
+        continue
+
+      # 3. only symbolic constants
+      rep_replace[rep] = const[0]
+
+    else:
+      # everything is an input, choose one arbitrarily
+      # FIXME: make sure we don't pick an intermediate node?
+      rep_replace[rep] = (CODE, iter(cvals).next())
+
+  # replace everything with the rep's replacement
+  for key,rep in eqs.key_reps():
+    if key not in replace and key != rep_replace[rep]:
+      replace[key] = rep_replace[rep]
+
+  if log.isEnabledFor(logging.DEBUG):
+    log.debug('replace\n  ' + pformat(replace))
+
+
+  # create new transformation 
+  # -------------------------
+  graft = Grafter(replace)
+
+  # create new source
+  if pattern_at:
+    if (PATTERN,pat) in replace:
+      raise AliveError('Pattern match point already matched')
+
+    # these values occur in op1.tgt only
+    intermediates = {(CODE,v) for k,v in op1.tgt.iteritems()
+      if k not in op1.tgt_skip and isinstance(v, Instr)}
+
+    log.debug('intermediates %s', intermediates)
+
+    root_uses = _DependencyFinder(set.union(pat_uses[pat], [pat]))(op2.src_root())
+    # FIXME: this can be combined with the earlier call
+
+    log.debug('root uses %s', root_uses)
+
+    if any(replace.get((PATTERN,v), ()) in intermediates for v in root_uses):
+      log.info('Extended pattern requires intermediate value.')
+      if log.isEnabledFor(logging.DEBUG):
+        x = tuple((v, replace[(PATTERN,v)]) for v in root_uses
+                    if replace.get((PATTERN,v), ()) in intermediates)
+        log.debug('Culprit: ' + pformat(x))
+      return None
+
+    replace[(PATTERN,pat)] = (CODE, op1.src_root())
+    new_s = graft.operand(op2.src_root(), PATTERN)
+  else:
+    new_s = graft.operand(op1.src_root(), CODE)
+
+  src = copy(graft.ids)
+  tgt_skip = {r for r,i in src.iteritems() if isinstance(i, Instr)}
+
+  if log.isEnabledFor(logging.DEBUG):
+    log.debug('src ids:\n' + '\n'.join('  %s = %s' % it for it in src.iteritems()))
+
+  # make precondition
+  pre1 = graft.subtree(op1.pre, CODE)
+  pre2 = graft.subtree(op2.pre, PATTERN)
+  pre = mk_conjoin(un_conjoin(pre1) + un_conjoin(pre2) + tuple(pre3))
+
+  # forget the new operands
+  # (this is okay, because fixupTypes now recurses into operands)
+  graft.ids = copy(src)
+
+  # create new target
+  if code_at:
+    replace[(CODE,code)] = (PATTERN, op2.tgt_root())
+    new_t = graft.operand(op1.tgt_root(), CODE)
+  else:
+    new_t = graft.operand(op2.tgt_root(), PATTERN)
+
+  # make sure target root has same name as source root
+  rname = new_s.getName()
+  graft.ids.pop(new_t.getName())
+  graft.ids.pop(rname)
+  graft.ids[rname] = rename_Instr(new_t, rname)
+  tgt_skip.discard(rname)
+
+  tgt = graft.ids
   
-  def with_code(self, term):
-    return CodeGrafter(self).operand(term)
+  if log.isEnabledFor(logging.DEBUG):
+    log.debug('tgt ids:\n' + '\n'.join('  %s = %s' % it for it in tgt.iteritems()))
+
+  src_bb = mk_bb(src)
+  tgt_bb = mk_bb(tgt)
+
+  if pattern_at:
+    name = '({0};{1}@{2})'.format(op1.name, op2.name, pattern_at)
+  elif code_at:
+    name = '({0}@{2};{1})'.format(op1.name, op2.name, code_at)
+  else:
+    name = '({};{})'.format(op1.name, op2.name)
+
+  return Transformation(name, pre, src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
+
+
+def mk_bb(ids):
+  bb = ((r,i) for r,i in ids.iteritems() if isinstance(i, Instr))
+  return {'': collections.OrderedDict(bb)}
 
 def un_conjoin(p):
   if isinstance(p, TruePred):
@@ -962,438 +1036,67 @@ def mk_conjoin(ps):
     return ps[0]
   return PredAnd(*ps)
 
-def mk_PredAnd(p1,p2):
-  if isinstance(p1, TruePred):
-    return p2
-  if isinstance(p2, TruePred):
-    return p1
-  return PredAnd(p1,p2)
-
-def compose(op1, op2, code_at = None, pattern_at = None):
-  '''Create a new transformation combining op1 and op2.
-
-  If tgt1_at is not None, then match it to the root of op2.src.
-  If src2_at is not None, then match it to the root of op1.tgt.
-  At least one of tgt1_at and src2_at must be None.
-  '''
-  assert code_at is None or pattern_at is None
-  
-  code = op1.tgt_root() if code_at is None else op1.tgt[code_at]
-  pat = op2.src_root() if pattern_at is None else op2.src[pattern_at]
-  
-#   print '\n\nComposing:'
-#   op1.dump()
-#   op2.dump()
-  
-  match = Matcher()
-  
-  if not match(pat, code):
-#     print 'No match'
-    return None
-  
-  print 'pvars:',
-  pprint({dump(k):dump(v) for k,v in match.pvars.iteritems()})
-  print 'cvars:',
-  pprint({dump(k):(c,dump(v)) for k,(c,v) in match.cvars.iteritems()})
-  print 'equalities:', match.equalities
-  
-  intermediates = {v for k,v in op1.tgt.iteritems() if k not in op1.tgt_skip and isinstance(v, Instr)}
-  
-#   print 'intermediates:',
-#   pprint({dump(v) for v in intermediates})
-    
-  graft = NewGrafter(match.pvars, match.cvars, intermediates)
-  
-  try:
-    if pattern_at:
-      graft.pvars[pat] = op1.src_root()
-      new_s = graft.with_pattern(op2.src_root())
-    else:
-      new_s = graft.with_code(op1.src_root())
-  except Uncomposable:
-    return None
-  
-  src = copy(graft.ids)
-  tgt_skip = {r for r,i in src.iteritems() if isinstance(i, Instr)}
-
-  # once the pattern has been matched, all code is available
-  graft.unavailable = set()
-  graft.phase = graft.Precondition
-  
-  pre1 = CodeGrafter(graft).subtree(op1.pre)
-  pre2 = PatternGrafter(graft).subtree(op2.pre)
-  pre3 = tuple(BinaryBoolPred(0, x, y) for x,y in match.equalities)
-  #pre = mk_PredAnd(pre1, pre2)
-  pre = mk_conjoin(un_conjoin(pre1) + un_conjoin(pre2) + pre3 + tuple(graft.equalities))
-  
-  aux = []
-  
-  # backward compatibility: add any new operands back to src, except for instrs
-  for r,i in graft.ids.iteritems():
-    if r not in src:
-      if isinstance(i, Instr):
-        aux.append(i)
-      else:
-        src[r] = i
-  
-#   print 'src:'
-#   pprint({k:dump(v) for k,v in src.iteritems()})
-#   print 'aux',
-#   pprint([dump(v) for v in aux])
-  
-  rname = new_s.getName()
-  graft.ids = copy(src)
-  graft.ids.pop(rname)
-  tgt_skip.discard(rname)
-  graft.phase = graft.Target
-  if code_at:
-    graft.cvars[code] = (False, op2.tgt_root())
-    old_t = rename_Instr(op1.tgt_root(), rname)
-    new_t = graft.with_code(old_t)
-  else:
-    old_t = rename_Instr(op2.tgt_root(), rname)
-    new_t = graft.with_pattern(old_t)
-    
-  tgt = graft.ids
-
-#   print 'tgt:'
-#   pprint({k:dump(v) for k,v in tgt.iteritems()})
-  
-  def mk_bb(ids):
-    bb = ((r,i) for r,i in ids.iteritems() if isinstance(i, Instr))
-    return {'': collections.OrderedDict(bb)}
-
-  src_bb = mk_bb(src)
-  tgt_bb = mk_bb(tgt)
-  
-  if pattern_at:
-    name = '({0};{1}@{2})'.format(op1.name, op2.name, pattern_at)
-  elif code_at:
-    name = '({0}@{2};{1})'.format(op1.name, op2.name, code_at)
-  else:
-    name = '({};{})'.format(op1.name, op2.name)
-  
-  return Transformation(name, pre, src_bb, tgt_bb, src, tgt, None, None, tgt_skip, aux)
-  
-
-def old_compose_2(op1, op2, tgt1_at = None, src2_at = None):
-  '''Create a new transformation combining op1 and op2.
-
-  If tgt1_at is not None, then match it to the root of op2.src.
-  If src2_at is not None, then match it to the root of op1.tgt.
-  At least one of tgt1_at and src2_at must be None.
-  '''
-  assert tgt1_at is None or src2_at is None
-
-  mroot1 = op1.tgt[op1.src_root().getName()] if tgt1_at is None else op1.tgt[tgt1_at]
-  mroot2 = op2.src_root() if src2_at is None else op2.src[src2_at]
-
-  # unify the specified sub-graphs
-  unify = Unifier()
-  match = unify(mroot1, mroot2)
-
-  if not match:
-    return None
-
-  #print 'compose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
-
-  graft = Grafter(unify.vars)
-
-  # copy op1.src, making the replacements found in unify
-  new_s = graft(op1.src_root())
-
-  if src2_at is not None:
-    # if we didn't match op1.tgt against the root of op2.src,
-    # then add the rest of op2.src
-
-    graft.done[mroot1] = new_s
-    new_s = graft(op2.src_root())
-
-  graft.allow_new_instrs = False
-  #FIXME: this is a temporary patch to avoid having the precondition
-  # add new instructions to the source. This should probably be changed
-  # to have a separate list, though, to avoid name duplication
-
-  # make a new precondition
-  pre1 = graft.subtree(op1.pre)
-  pre2 = graft.subtree(op2.pre)
-  #FIXME: make sure this does not add new instructions
-  
-  graft.allow_new_instrs = True
-
-  # gather all the operands defined when creating the src and pre
-  src = copy(graft.ids)
-  tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
-
-  src_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in src.iteritems() if isinstance(i, Instr)])}
-
-  if tgt1_at is not None:
-    # if we matched op2.src against a sub-value of op1.tgt,
-    # then we will need to graft the modified op2.tgt into op1.tgt
-    new_t = graft(op2.tgt[op2.src_root().getName()])
-    graft.done[mroot1] = new_t
-
-  # remove the root from graft's list of identifiers, 
-  # in order to graft the new tgt
-  rname = new_s.getName()
-  graft.ids.pop(rname)
-  tgt_skip.discard(rname)
-
-  # copy op2.tgt with the root matching the root of new_s
-  if tgt1_at is None:
-    old_tgt_root = rename_Instr(op2.tgt[op2.src_root().getName()], rname)
-  else:
-    old_tgt_root = rename_Instr(op1.tgt[op1.src_root().getName()], rname)
-
-  new_t = graft(old_tgt_root)
-
-  tgt = graft.ids
-  tgt_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in tgt.iteritems() if isinstance(i, Instr)])}
-
-  if tgt1_at is not None:
-    name = '({0}@{2};{1})'.format(op1.name, op2.name, tgt1_at)
-  elif src2_at is not None:
-    name = '({0};{1}@{2})'.format(op1.name, op2.name, src2_at)
-  else:
-    name = '({0};{1})'.format(op1.name, op2.name)
-
-  return Transformation(name, mk_PredAnd(pre1,pre2), src_bb, tgt_bb,
-    src, tgt, None, None, tgt_skip)
-
-# TODO: remove
-def old_compose(op1, op2):
-  '''Create a new transformation combining op1 and op2'''
-  
-  t1 = op1.tgt[op1.src_root().getName()]
-  t2 = op2.src_root()
-  
-  unify = Unifier()
-  match = unify(t1,t2)
-  
-  if not match:
-    return None
-  
-  #print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
-  
-  #print '\n-----\nsrc'
-  graft = Grafter(unify.vars)
-  new_s = graft(op1.src_root())
-  
-  try:
-    #print '\n-----\npre1'
-    pre1 = graft.subtree(op1.pre)
-  
-    #print '\n-----\npre2'
-    pre2 = graft.subtree(op2.pre)
-  except UnacceptableArgument, e:
-    #sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
-    raise
-
-  src = copy(graft.ids)
-  tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
-  
-  src_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in src.iteritems() if isinstance(i, Instr)])}
-  
-  #graft.ids = collections.OrderedDict()
-  
-  #print '\n-----\ntgt'
-  rname = new_s.getName()
-  graft.ids.pop(rname)
-  tgt_skip.discard(rname)
-  
-  old_tgt_root = op2.tgt[op2.src_root().getName()]
-  
-  if old_tgt_root.getName() != op1.src_root().getName():
-    old_tgt_root = rename_Instr(old_tgt_root, op1.src_root().getName())
-  
-  new_t = graft(old_tgt_root)
-  tgt = graft.ids
-  tgt_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in tgt.iteritems() if isinstance(i, Instr)])}
-  
-  comp = Transformation(op1.name + ';' + op2.name, mk_PredAnd(pre1,pre2),
-    src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
-  
-  assert comp.src_root() is new_s
-  
-  
-  #print '\n-----'
-  #comp.dump()
-  
-  return comp
-
-def compose_off_first(op1, k, op2):
-  '''Attempts to match the root of op1.tgt against register k in op2.src.'''
-  
-  t1 = op1.tgt[op1.src_root().getName()]
-  t2 = op2.src[k]
-  
-  unify = Unifier()
-  match = unify(t1,t2)
-  
-  if not match:
-    return None
-    
-  #print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
-  
-  graft = Grafter(unify.vars)
-  new_s = graft(op1.src_root())
-  
-  graft.done[t2] = new_s
-  
-  newer_s = graft(op2.src_root())
-  
-  try:
-    # precondition
-    pre1 = graft.subtree(op1.pre)
-    pre2 = graft.subtree(op2.pre)
-  except UnacceptableArgument, e:
-    #sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
-    #return None
-    raise
-  
-  src = copy(graft.ids)
-  tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
-  
-  src_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in src.iteritems() if isinstance(i, Instr)])}
-  
-  rname = newer_s.getName()
-  graft.ids.pop(rname)
-  tgt_skip.discard(rname)
-  
-  old_tgt_root = rename_Instr(op2.tgt[op2.src_root().getName()], rname)
-  
-  new_t = graft(old_tgt_root)
-  tgt = graft.ids
-  tgt_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in tgt.iteritems() if isinstance(i, Instr)])}
-  
-
-  comp = Transformation('{0}({1});{2}'.format(op1.name, k, op2.name),
-    mk_PredAnd(pre1,pre2), src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
-  
-  #comp.dump()
-  return comp
-
-
-def compose_off_second(k, op1, op2):
-  '''Attempts to match register k of op1.tgt against the root of op2.src.'''
-  
-  t1 = op1.tgt[k]
-  t2 = op2.src_root()
-  
-  unify = Unifier()
-  match = unify(t1,t2)
-  
-  if not match:
-    return None
-    
-  #print '\ncompose: matched', {dump(k):dump(v) for k,v in unify.vars.iteritems()}
-  
-  graft = Grafter(unify.vars)
-  new_s = graft(op1.src_root())
-  
-  try:
-    # precondition
-    pre1 = graft.subtree(op1.pre)
-    pre2 = graft.subtree(op2.pre)
-  except UnacceptableArgument, e:
-    #sys.stderr.write('\nWARNING: caught ' + str(e) + '\n')
-    #return None
-    raise
-  
-  src = copy(graft.ids)
-  tgt_skip = { r for r,i in src.iteritems() if not isinstance(i, Input) }
-  
-  src_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in src.iteritems() if isinstance(i, Instr)])}
-  
-  new_t = graft(op2.tgt[t2.getName()])
-  
-  #print_prog({'': graft.ids}, set())
-  
-  rname = new_s.getName()
-  graft.ids.pop(rname)
-  tgt_skip.discard(rname)
-  #tgt_skip = set()
-  
-  old_src_root = rename_Instr(op1.tgt[op1.src_root().getName()], rname)
-  #old_src_root = op1.tgt[op1.src_root().getName()]
-  
-  graft.done[t1] = new_t  
-  
-  new_t = graft(old_src_root)
-  tgt = graft.ids
-  tgt_bb = {'': collections.OrderedDict(
-    [(r,i) for r,i in tgt.iteritems() if isinstance(i, Instr)])}
-  
-
-  comp = Transformation('{0};({1}){2}'.format(op1.name, k, op2.name),
-    mk_PredAnd(pre1,pre2), src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
-  
-  #comp.dump()
-  return comp
-
 
 def satisfiable(opt):
   '''check whether a transformation's precondition can be satisfied'''
   
-  #print '-----'
-  #print opt.dump()
+  log = logger.getChild('satisfiable')
+  log.info('checking %s', opt.name)
+  log.debug('\n%s', opt)
   
-  for types in opt.type_models():
-    #print 'attempting'
-    set_ptr_size(types)
-    fixupTypes(opt.src, types)
-    fixupTypes(opt.tgt, types)
-    opt.pre.fixupTypes(types)
-    for v in opt.aux: v.fixupTypes(types)
-    
-    srcv = toSMT(opt.src_bb, opt.src, True)
-    tgtv = toSMT(opt.tgt_bb, opt.tgt, False)
-    try:
-      pre_d, pre = opt.pre.toSMT(srcv)
-      # FIXME: this crashes occasionally. why?
-    except Exception:
-      print 'Threw exception in satisfiable()'
-      print 'types', types
-      print 'srcv', srcv.vars
-      print 'tgtv', tgtv.vars
-      raise
+  try:
+    for types in opt.type_models():
+      #print 'attempting'
+      set_ptr_size(types)
+      fixupTypes(opt.src, types)
+      fixupTypes(opt.tgt, types)
+      opt.pre.fixupTypes(types)
+
+      srcv = toSMT(opt.src_bb, opt.src, True)
+      tgtv = toSMT(opt.tgt_bb, opt.tgt, False)
+      try:
+        pre_d, pre = opt.pre.toSMT(srcv)
+        # FIXME: this crashes occasionally. why?
+      except Exception:
+        log.error('''Threw exception in satisfiable()
+  types %s
+  srcv %s
+  tgtv %s''', types, srcv.vars, tgtv.vars)
+        raise
   
-    extra_cnstrs = pre_d + pre  # NOTE: not checking allocas
+      extra_cnstrs = pre_d + pre  # NOTE: not checking allocas
     
-    # show satsifiability
-    # NOTE: does this need to know about qvars?
-    s = alive.tactic.solver()
-    s.add(extra_cnstrs)
-    #print 'checking', s
-    alive.gen_benchmark(s)
-    res = s.check()
+      # show satsifiability
+      # NOTE: does this need to know about qvars?
+      s = alive.tactic.solver()
+      s.add(extra_cnstrs)
+      #print 'checking', s
+      alive.gen_benchmark(s)
+      res = s.check()
     
-    if res == sat:
-      print 'success:', s.model()
-      alive.print_var_vals(s, srcv, tgtv, 'X', types)
-      return True
-    
+      if res == sat:
+        log.info('success: %s', s.model())
+        #TODO: make this loggable
+        #alive.print_var_vals(s, srcv, tgtv, 'X', types)
+        return True
+  except AliveTypeError as e:
+    log.info('type error: %s', e)
+
   return False
   
 
 def all_bin_compositions(o1, o2, immediate=True):
+  logger.info('all_bin_compositions |%s| |%s|', o1.name, o2.name)
   #assert o1 is not o2
 
   try:
     o12 = compose(o1, o2)
     if o12: 
       yield o12
-  except Exception, e:
+  except Exception as e:
     if immediate: 
       raise
-    yield e
+    logger.exception('all_bin_compositions %r\n;\n%s\n;\n%s', e, o1, o2)
   
   regs = [r for r,v in o2.src.iteritems() if isinstance(v,Instr)]
   regs.pop()
@@ -1401,10 +1104,10 @@ def all_bin_compositions(o1, o2, immediate=True):
     try:
       o12 = compose(o1, o2, pattern_at = r)
       if o12: yield o12
-    except Exception, e:
+    except Exception as e:
       if immediate:
         raise
-      yield e
+      logger.exception('all_bin_compositions %r\n;@%s\n%s\n;\n%s', e, r, o1, o2)
   
   regs = [r for r,v in o1.tgt.iteritems()
             if isinstance(v,Instr) and r not in o1.tgt_skip]
@@ -1413,48 +1116,10 @@ def all_bin_compositions(o1, o2, immediate=True):
     try:
       o12 = compose(o1, o2, code_at = r)
       if o12: yield o12
-    except Exception, e:
+    except Exception as e:
       if immediate:
         raise
-      yield e
-
-def old_all_bin_compositions(o1, o2, immediate=True):
-  assert o1 is not o2
-
-  try:
-    o12 = compose(o1, o2)
-    if o12: 
-      yield o12
-  except Exception, e:
-    if immediate: 
-      raise
-    yield e
-  
-  regs = [r for r,v in o2.src.iteritems() if isinstance(v,Instr)]
-  regs.pop()
-  for r in regs:
-    try:
-      #o12 = compose_off_first(o1, r, o2)
-      o12 = compose(o1, o2, src2_at = r)
-      if o12: yield o12
-    except Exception, e:
-      if immediate:
-        raise
-      yield e
-  
-  regs = [r for r,v in o1.tgt.iteritems()
-            if isinstance(v,Instr) and r not in o1.tgt_skip]
-  regs.pop()
-  for r in regs:
-    try:
-      #o12 = compose_off_second(r, o1, o2)
-      o12 = compose(o1, o2, tgt1_at = r)
-      if o12: yield o12
-    except Exception, e:
-      if immediate:
-        raise
-      yield e
-
+      logger.exception('all_bin_compositions %r\n;\n%s\n;@%s\n%s', e, o1, r, o2)
 
 
 def all_compositions(opts):

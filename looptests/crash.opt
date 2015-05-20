@@ -1,3 +1,4 @@
+; should reject
 Name: AddSub:1265
 Pre: WillNotOverflowSignedAdd(%x,trunc(C)) && (C & (-1 << (width(%x) - 1))) == 0
 %sx = sext %x

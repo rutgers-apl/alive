@@ -737,7 +737,7 @@ class Select(Instr):
   def __init__(self, type, c, v1, v2):
     assert isinstance(type, Type)
     assert isinstance(c, Value)
-    assert isinstance(c.type, IntType)
+    #assert isinstance(c.type, IntType)
     assert isinstance(v1, Value)
     assert isinstance(v2, Value)
     self.type = type.ensureFirstClass()

@@ -1,3 +1,6 @@
+; no match
+; avoid circular reference
+
 Name: AddSub:1098
 %ax = zext i1 %a
 %c = add %ax, %b

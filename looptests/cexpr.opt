@@ -16,3 +16,15 @@ Name: AndOrXor:2243  ((B | C) & A) | B -> B | (A & C)
   =>
 %a = and %A, %C
 %r = or %B, %a
+
+;  (AddSub:1043@%or;AndOrXor:2243
+; Pre: C0 == ~C1
+; %o = or C0, %C
+; %op0 = and %o, %A
+; %Y = and %op0, C1
+; %X = xor %Y, C1
+; %LHS = add %X, 1
+; %r = add %LHS, %RHS
+;   =>
+; %a = and %A, %C
+; %r = or C0, %a

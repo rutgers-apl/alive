@@ -2,8 +2,11 @@
 '''
 from loops import *
 import traceback
+import logging
 
-print 'reading master.opt'
+logging.basicConfig(filename='debug_count.log', filemode='w', level=logging.WARNING)
+
+sys.stderr.write('reading master.opt\n')
 
 opts = parse_transforms(open('master.opt').read())
 
@@ -12,7 +15,7 @@ opts = parse_transforms(open('master.opt').read())
 
 
 
-print 'optimizations', len(opts)
+sys.stderr.write('%s optimizations\n' % len(opts))
 
 count = 0
 increasing = 0
@@ -27,46 +30,41 @@ for o1 in opts:
     
     try:
       for o3 in all_bin_compositions(o1,o2, False):
-        if isinstance(o3, Exception):
-          errors += 1
-          print '\n----- Exception', o1.name, o2.name, '\n', str(o3)
-          continue
-
-        #sys.stdout.write('\r' + o3.name)
-        #sys.stdout.flush()
         
         o3_src = sum(1 for v in o3.src.itervalues() if isinstance(v, Instr))
         
         #o3c = o3.copy()
         
         for oo in all_bin_compositions(o3, o3, False):
-          if isinstance(oo, Exception):
-            errors += 1
-            print '\n----- Exception\n'
-            o3.dump()
-            print str(oo)
-            continue
 
           count += 1
           oo_src = sum(1 for v in oo.src.itervalues() if isinstance(v, Instr))
           
+          sys.stderr.write('\rTested: ' + str(count))
+          sys.stdout.flush()
+
           if o3_src < oo_src:
             increasing += 1
             continue
-          
+
           if satisfiable(oo):
             print '\n-----\nLoop: ', o3.name
+            o1.dump()
+            print
+            o2.dump()
+            print
             o3.dump()
             loops += 1
           else:
             unsat += 1
-                
+
     except Exception, e:
-      print '\n-----\ndebug_count: Caught exception doing', o1.name, '::', o2.name
-      print traceback.format_exc(sys.exc_info())
+      logging.exception('combining <%s> <%s>', o1.name, o2.name)
       errors += 1
 
+sys.stderr.write('\n')
 print
+print '----'
 print 'final count', count
 print 'loops', loops
 print 'unsat', unsat

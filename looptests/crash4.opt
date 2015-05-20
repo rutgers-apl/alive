@@ -22,7 +22,7 @@ Pre: isPowerOf2(%K1) && isPowerOf2(%K2)
 %masked = and %A, %mask
 %r = icmp ne %masked, %mask
 
-
+; pattern_at %cmp1
 ; Pre: IsPowerOf2(and %b, %d) && isPowerOf2(%K2)
 ; %a1 = and 0, %b
 ; %op0 = icmp eq %a1, 0

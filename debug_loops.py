@@ -103,10 +103,10 @@ def check_opt(opt):
     alive.check_typed_opt(opt.pre, opt.src_bb, opt.src, opt.tgt_bb, opt.tgt, 
       types, users)
     proofs += 1
-    sys.stdout.write('\rDone: ' + str(proofs))
-    sys.stdout.flush()
-  
-  print
+    sys.stderr.write('\rDone: ' + str(proofs))
+    #sys.stderr.flush()
+
+  sys.stderr.write('\n')
 
 def test_check_opt(input = sample_nsw):
   opts = parse_transforms(input)
@@ -117,19 +117,6 @@ def test_check_opt(input = sample_nsw):
       print '\n-----'
       check_opt(oo)
 
-def test_is_composable(input):
-  opts = [Transformation(*o) for o in parse_opt_file(input)]
-  print
-  print 'TEST is_composable'
-  print '------------------'
-  print
-
-  for o1, o2 in combinations(opts, 2):
-    print '----------'
-    print 'checking {0} and {1}'.format(o1.name, o2.name)
-    r = is_composable(o1, o2)
-    print '=>', r
-  
 def test_copy(input = sample):
   print
   print 'TEST copy'
@@ -192,70 +179,6 @@ def test_new_compose(input = sample_nonlinear):
   c = compose(opts[0], opts[1])
   if c: 
     c.dump()
-
-  print '-----'
-  c2 = new_compose(opts[0], opts[1])
-  if c2:
-    c2.dump()
-
-def test_compose_off_first(input = sample_add):
-  print
-  print 'TEST compose_off_first'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-  
-  if len(opts) == 1:
-    opts.append(opts[0].copy()) #lambda n: n + '.1'))
-  
-  o1 = opts[0]
-  o2 = opts[1]
-  
-  regs = [k for k,v in o2.src.iteritems() if isinstance(v, Instr)]
-  
-  print 'composing', o1.name, o2.name
-  o1.dump()
-  o2.dump()
-  
-  for r in regs:
-    print '\n-----\ncompose at', r
-    c1 = compose_off_first(o1, r, o2)
-    if c1: c1.dump()
-    c2 = new_compose(o1, o2, src2_at = r)
-    if c2: c2.dump()
-
-def test_compose_off_second(input = sample_add):
-  print
-  print 'TEST compose_off_second'
-  print '----------------------'
-  print
-  opts = parse_transforms(input)
-  
-  if len(opts) == 1:
-    opts.append(opts[0].copy()) #lambda n: n + '.1'))
-  
-  o1 = opts[0]
-  o2 = opts[1]
-  
-  regs = [k for k,v in o1.tgt.iteritems() 
-            if isinstance(v, Instr) and k not in o1.tgt_skip]
-  
-  regs.pop()
-  
-  print 'composing', o1.name, o2.name
-  o1.dump()
-  o2.dump()
-  
-  for r in regs:
-    print '\n-----\ncompose at', r
-    c1 = compose_off_second(r, o1, o2)
-    if c1 is not None:
-      c1.dump()
-
-    c2 = new_compose(o1, o2, tgt1_at = r)
-    if c2 is not None:
-      c2.dump()
-
     
 
 def test_all_comps(input = sample_nonlinear):
@@ -329,19 +252,43 @@ def test_matcher(input):
       pprint({dump(k):dump(v) for k,v in match.cvars.iteritems()})
       print 'equalities:', match.equalities
 
-def test_new_compose_self(sample = None):
+def test_new_compose_self(sample = None, check_opts = False):
   if sample is None: sample = open('master.opt').read()
   opts = parse_transforms(sample)
+  if len(opts) == 1:
+    opts.append(opts[0])
+
+  for c in all_bin_compositions(opts[0],opts[1], True):
+    c.dump()
+    b = satisfiable(c)
+    print 'sat:', b
+    if check_opts:
+      check_opt(c)
+
+    for cc in all_bin_compositions(c,c, True):
+      cc.dump()
+      b = satisfiable(cc)
+      print 'sat:', b
+      if check_opts:
+        check_opt(cc)
+
+
+def test_all_uses(input = sample_icmp):
+  opts = parse_transforms(input)
+  
+  print 'Read', len(opts), 'optimizations'
   
   for o in opts:
-    for c in new_all_bin_compositions(o,o,False):
-      if isinstance(c, Transformation):
-        c.dump()
-      else:
-        print c
+    print '\n-----'
+    o.dump()
+    print
+    pprint(all_uses(o.src_root()))
+    print
+    pprint(all_uses(o.tgt_root()))
 
 def main():
   import argparse
+  logging.basicConfig()
   parser = argparse.ArgumentParser()
   parser.add_argument('-s', '--self', action='store_true',
     help='test each transformation for a self-loop')
@@ -375,36 +322,5 @@ def main():
     import debug_sequence
     debug_sequence.compose_sequence(opts)
 
-sample_current = '''
-Name: AndOrXor:1288 (A ^ B) & ((B ^ C) ^ A) -> (A ^ B) & ~C
-Pre: true
-  %op0 = xor %A, %B
-  %x = xor %B, %C
-  %op1 = xor %x, %A
-  %r = and %op0, %op1
-=>
-  %op0 = xor %A, %B
-  %negC = xor %C, -1
-  %r = and %op0, %negC
-
-Name: AndOrXor:1288 (A ^ B) & ((B ^ C) ^ A) -> (A ^ B) & ~C
-Pre: true
-  %op0 = xor %A, %B
-  %x = xor %B, %C
-  %op1 = xor %x, %A
-  %r = and %op0, %op1
-=>
-  %op0 = xor %A, %B
-  %negC = xor %C, -1
-  %r = and %op0, %negC
-'''
-
 if __name__ == '__main__':
-  #test_check_opt()
-  #test_all_comps(sample_cnst)
   main()
-  #test_compose_off_first()
-  #test_compose_off_second()
-  #test_all_comps()
-  #test_new_compose(sys.stdin.read())
-  #test_new_compose_self()
