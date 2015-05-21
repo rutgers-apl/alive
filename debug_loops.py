@@ -288,8 +288,12 @@ def test_all_uses(input = sample_icmp):
 
 def main():
   import argparse
-  logging.basicConfig()
+  logging.basicConfig(filename='debug_loops.log', filemode='w')
+  logging.getLogger('loops.compose').setLevel(logging.DEBUG)
+  #logging.getLogger('loops.Grafter').setLevel(logging.INFO)
   parser = argparse.ArgumentParser()
+  parser.add_argument('-x', '--compose', action='store_true',
+    help='compose the first two transformations')
   parser.add_argument('-s', '--self', action='store_true',
     help='test each transformation for a self-loop')
   parser.add_argument('-c', '--cycle', action='store_true',
@@ -308,6 +312,14 @@ def main():
   
   sys.stderr.write('read {} transforms\n'.format(len(opts)))
   
+  if args.compose:
+    if len(opts) < 2:
+      opts.append(opts[0])
+
+    for c in all_bin_compositions(opts[0], opts[1]):
+      print '-----'
+      c.dump()
+
   if args.self:
     loops = 0
     for o in opts:

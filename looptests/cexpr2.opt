@@ -1,3 +1,5 @@
+; should be rejected
+; matching pattern %A against code %v2 is impossible, because %A occurs in the final pattern
 Name: Select:465
 Pre: isPowerOf2(C1) && isPowerOf2(C2) && log2(C2) >= log2(C1)
 %and = and %X, C1

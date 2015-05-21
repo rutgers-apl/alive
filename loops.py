@@ -822,6 +822,12 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   if log.isEnabledFor(logging.DEBUG):
     log.debug('equivalence classes\n  ' + pformat(eqs._eqs, indent=2))
 
+  # these values occur in op1.tgt only
+  intermediates = {(CODE,v) for k,v in op1.tgt.iteritems()
+    if k not in op1.tgt_skip and isinstance(v, Instr)}
+
+  log.debug('intermediates %s', intermediates)
+
   # check validity of equivalences
   # ------------------------------
 
@@ -891,6 +897,15 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
     elif pinstr:
       rep_replace[rep] = (PATTERN, pinstr[0])
+
+      # check whether this instructions dependencies unified with an intermediate value
+      for pval in pat_uses[pinstr[0]]:
+        log.debug('%s uses %s', pinstr[0], pval)
+        if (PATTERN,pval) in eqs:
+          if any((CODE,c) in intermediates for c in eqs.eqs(PATTERN,pval)[CODE]):
+            log.info('reject: pattern instruction depends on intermediate value')
+            return None
+
     elif const:
       # pvals contains only inputs or literals
       # cvals contains inputs or cexprs
@@ -946,12 +961,6 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   if pattern_at:
     if (PATTERN,pat) in replace:
       raise AliveError('Pattern match point already matched')
-
-    # these values occur in op1.tgt only
-    intermediates = {(CODE,v) for k,v in op1.tgt.iteritems()
-      if k not in op1.tgt_skip and isinstance(v, Instr)}
-
-    log.debug('intermediates %s', intermediates)
 
     root_uses = _DependencyFinder(set.union(pat_uses[pat], [pat]))(op2.src_root())
     # FIXME: this can be combined with the earlier call
