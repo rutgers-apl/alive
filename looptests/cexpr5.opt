@@ -1,4 +1,4 @@
-; expect 1 composition
+; expect 1 loop
 
 Name: AddSub:1539-2
 Pre: true

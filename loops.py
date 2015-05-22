@@ -105,22 +105,6 @@ def all_uses(value):
   return find.uses
 
 
-def all_identifiers(value):
-  class V(Visitor):
-    def default(self, v):
-      return []
-
-    def visit_Input(self, v):
-      return [v]
-    
-    def visit_BinOp(self, v):
-      return v.v1.visit(self) + v.v2.visit(self) + [v]
-  
-    def visit_CnstBinaryOp(self, v):
-      return v.v1.visit(self) + v.v2.visit(self)
-
-  return value.visit(V())
-
 class UnacceptableArgument(AliveError):
   def __init__(self, cls, arg, val, msg = ''):
     self.cls = cls
@@ -770,13 +754,14 @@ class Grafter(CopyBase):
       i += 1
       name = term.getName() + str(i)
 
+    self.logger.debug('new input %s for (%s, %s)', name, sort, term)
     new_term = Input(name, copy_type(term.type))
     self.ids[name] = new_term
     return new_term
 
 # --
 
-def _cycle_check(eqs, code_uses, pat_uses):
+def _cycle_check(eqs, code_uses, pat_uses, sorted, parents):
   '''
   Used by compose to find cycles. Basic DFS, except the arcs are 
   determined by uses and eqs.
@@ -801,8 +786,13 @@ def _cycle_check(eqs, code_uses, pat_uses):
 
     puses = imap(lambda n: (PATTERN,n), chain.from_iterable(pat_uses[p] for p in pvals))
     cuses = imap(lambda n: (CODE,n), chain.from_iterable(code_uses[p] for p in cvals))
+    uses = set(eqs.rep(*k) for k in chain(puses,cuses) if k in eqs)
 
-    cycle = any(search(eqs.rep(*k)) for k in chain(puses,cuses) if k in eqs)
+    for k in uses:
+      parents[k].add(rep)
+
+    cycle = any(search(k) for k in uses)
+    sorted.append(rep)
     done[rep] = True
     return cycle
 
@@ -890,20 +880,34 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
   # cycle check
   code_uses = all_uses(code)
-  pat_uses = all_uses(pat)
+  pat_uses = all_uses(op2.src_root())
+  extended_pat_uses = _DependencyFinder(set.union(pat_uses[pat], [pat]))(op2.src_root())
   if log.isEnabledFor(logging.DEBUG):
     log.debug('\ncode_uses:\n' + pformat(code_uses, indent=2)
-      + '\npat_uses:\n' + pformat(pat_uses, indent=2))
+      + '\npat_uses:\n' + pformat(pat_uses, indent=2)
+      + '\nextended_pat-uses:\n' + pformat(extended_pat_uses, indent=2))
 
-  if _cycle_check(eqs, code_uses, pat_uses):
+  toposort = []
+  direct_users = collections.defaultdict(set)
+
+  if _cycle_check(eqs, code_uses, pat_uses, toposort, direct_users):
     log.info('reject: unifications form a cycle')
     return None
+
+  log.debug('topological sort: %s', toposort)
+  log.debug('direct_users: %s', direct_users)
+  users = get_ancestors(direct_users)
+  log.debug('users: %s', users)
 
   pre3 = []
   rep_replace = {}
   replace = {}
-  for rep, (pvals, cvals) in eqs.class_items():
-    log.debug('checking %s', rep)
+
+  # test each subset after any subsets which use it
+  for rep in reversed(toposort):
+    pvals, cvals = eqs.eqs(*rep)
+    log.debug('checking %s: %s, %s', rep, pvals, cvals)
+    log.debug('rep_replace: %s', rep_replace)
 
     cinstr = tuple(v for v in cvals if isinstance(v, Instr))
     if len(cinstr) > 1:
@@ -948,9 +952,8 @@ def compose(op1, op2, code_at = None, pattern_at = None):
         if cexpr in sub_cexprs: continue
 
         log.info('new constant for %s', cexpr)
-        new_c = Input('C0', IntType())
-        pre3.append(BinaryBoolPred(0, new_c, cexpr))
-        replace[(CODE,cexpr)] = (CODE, new_c)
+        new_c = (CODE, Input('C0', IntType()))
+        pre3.append((new_c, (CODE,cexpr)))
 
     elif pinstr:
       rep_replace[rep] = (PATTERN, pinstr[0])
@@ -970,27 +973,36 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       # 1. make sure all literals agree
       lits = set(v.val for s,v in const if isinstance(v, ConstantVal))
       if len(lits) > 1:
-        log.info('unified distinct literals')
+        log.info('reject: unified distinct literals')
         return None
 
       # 2. constant expressions
       cexprs = tuple(v for v in cvals if isinstance(v, Constant) and not isinstance(v, ConstantVal))
-      if cexprs:
-        if lits:
-          new_c = ConstantVal(lits.pop(), IntType())
-        else:
-          new_c = Input('C0', IntType())
+      # 2a. constants and literals
+      if lits:
+        new_c = (CODE, ConstantVal(lits.pop(), IntType()))
+        rep_replace[rep] = new_c
 
-        for c in cexprs:
-          replace[(CODE,c)] = (CODE,new_c)
-          pre3.append(BinaryBoolPred(0, new_c, c))
+        pre3.extend((new_c,(CODE,c)) for c in cexprs)
 
-        rep_replace[rep] = (CODE,new_c)
         continue
 
-      # 2a. if there is only one literal, use it
-      if lits:
-        rep_replace[rep] = (CODE, ConstantVal(lits.pop(), IntType()))
+      # 2b. constant expressions
+      if cexprs:
+        if any(sort == PATTERN and isinstance(r, Instr) for sort,r in
+                (rep_replace[r] for r in users.get(rep,()))) or \
+            not pvals.isdisjoint(extended_pat_uses):
+          log.debug('Used by a pattern instruction or extended pattern')
+          new_c = (CODE, Input('C0', IntType()))
+          rep_replace[rep] = new_c
+          pre3.extend((new_c, (CODE,c)) for c in cexprs)
+          continue
+
+        new_c = (CODE, cexprs[0])
+        rep_replace[rep] = new_c
+
+        pre3.extend((new_c, (CODE,c)) for c in cexprs[1:])
+
         continue
 
       # 3. only symbolic constants
@@ -1000,6 +1012,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       # everything is an input, choose one arbitrarily
       # FIXME: make sure we don't pick an intermediate node?
       rep_replace[rep] = (CODE, iter(cvals).next())
+          
 
   # replace everything with the rep's replacement
   for key,rep in eqs.key_reps():
@@ -1019,9 +1032,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     if (PATTERN,pat) in replace:
       raise AliveError('Pattern match point already matched')
 
-    root_uses = _DependencyFinder(set.union(pat_uses[pat], [pat]))(op2.src_root())
-    # FIXME: this can be combined with the earlier call
-
+    root_uses = extended_pat_uses
     log.debug('root uses %s', root_uses)
 
     if any(replace.get((PATTERN,v), ()) in intermediates for v in root_uses):
@@ -1046,7 +1057,10 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   # make precondition
   pre1 = graft.subtree(op1.pre, CODE)
   pre2 = graft.subtree(op2.pre, PATTERN)
+  pre3 = map(lambda ((s1,v1),(s2,v2)): BinaryBoolPred(0, graft.subtree(v1,s1), v2.visit(graft, s2)), pre3)
   pre = mk_conjoin(un_conjoin(pre1) + un_conjoin(pre2) + tuple(pre3))
+
+  log.debug('pre: %s', pre)
 
   # forget the new operands
   # (this is okay, because fixupTypes now recurses into operands)
@@ -1085,6 +1099,22 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   _validate(r)
   return r
 
+def get_ancestors(parents):
+  ancestors = {}
+  def walk(node):
+    if node in ancestors:
+      return
+
+    direct = parents.get(node, set())
+    ancestors[node] = set(direct)
+    for p in direct:
+      walk(p)
+      ancestors[node].update(ancestors[p])
+
+  for node in parents:
+    walk(node)
+
+  return ancestors
 
 def mk_bb(ids):
   bb = ((r,i) for r,i in ids.iteritems() if isinstance(i, Instr))
