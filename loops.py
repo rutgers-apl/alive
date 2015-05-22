@@ -80,6 +80,21 @@ class _DependencyFinder(Visitor):
   def visit_CnstFunction(self, v):
     return set.union(set(v.args), *(self(a) for a in v.args))
 
+  def visit_PredNot(self, t):
+    return self(t)
+
+  def visit_PredAnd(self, t):
+    return set.union(*(self(a) for a in t.args))
+
+  def visit_PredOr(self, t):
+    return set.union(*(self(a) for a in t.args))
+
+  def visit_BinaryBoolPred(self, t):
+    return set.union(self(t.v1), self(t.v2))
+
+  def visit_LLVMBoolPred(self, t):
+    return set.union(*(self(a) for a in t.args))
+
 def all_uses(value):
   '''
   Recursively walk value and its dependencies. Return a map from values to
@@ -767,7 +782,7 @@ def _cycle_check(eqs, code_uses, pat_uses):
   determined by uses and eqs.
   '''
   
-  log = logger.getChild('_cycle_check')
+  log = logger.getChild('cycle_check')
 
   done = {} # False when key is in progress, True when complete
 
@@ -792,6 +807,48 @@ def _cycle_check(eqs, code_uses, pat_uses):
     return cycle
 
   return any(search(rep) for rep in eqs.reps() if rep not in done)
+
+def _validate(op):
+  '''
+  Check for common incorrect compositions.
+  '''
+  log = logger.getChild('validate')
+
+  df = _DependencyFinder()
+  src_uses = df(op.src_root())
+  tgt_uses = df(op.tgt_root())
+  pre_uses = df(op.pre)
+
+  if log.isEnabledFor(logging.DEBUG):
+    log.debug('src_uses\n  '
+      + '\n  '.join('<%s>#%s'%(v,id(v)) for v in src_uses)
+      + '\ntgt_uses\n  '
+      + '\n  '.join('<%s>#%s'%(v,id(v)) for v in tgt_uses)
+      + '\npre_uses\n  '
+      + '\n  '.join('<%s>#%s'%(v,id(v)) for v in pre_uses))
+
+  # every value in src must have a unique name
+  names = collections.Counter()
+  for v in src_uses:
+    names[v.getUniqueName()] += 1
+  for n,c in names.iteritems():
+    if c > 2:
+      log.error('Non-unique name: %s\n%s', n, op)
+      raise AliveError('Non-unique name')
+
+  # every input must occur in the src
+  for v in chain(tgt_uses, pre_uses):
+    log.debug('Checking <%s>#%s', v, id(v))
+    if isinstance(v, Input) and v not in src_uses:
+      log.error('Input %s does not occur in source\n%s', v, op)
+      raise AliveError('Input %s does not occur in source' % v)
+
+  # src must not contain cexprs
+  for v in src_uses:
+    if isinstance(v, Constant) and not isinstance(v, ConstantVal) \
+      and not isinstance(v, UndefVal):
+      log.error('Constant expression in source\n%s', op)
+      raise AliveError('Constant expression in source')
 
 def compose(op1, op2, code_at = None, pattern_at = None):
   '''Create a new transformation combining op1 and op2.
@@ -1024,7 +1081,9 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   else:
     name = '({};{})'.format(op1.name, op2.name)
 
-  return Transformation(name, pre, src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
+  r = Transformation(name, pre, src_bb, tgt_bb, src, tgt, None, None, tgt_skip)
+  _validate(r)
+  return r
 
 
 def mk_bb(ids):
