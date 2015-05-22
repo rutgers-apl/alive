@@ -1,3 +1,4 @@
+; expect 1 loop
 Name: AndOrXor:230
 Pre: (C2 & lshr(-1, C1) != lshr(-1, C1))
 ; Pre: C2 & lshr(-1, C1) != C2

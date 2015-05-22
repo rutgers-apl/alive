@@ -1,3 +1,4 @@
+; expect 0 loops
 Name: AndOrXor:144
 Pre: C1&C2 != C1
 ; -- only for profitability

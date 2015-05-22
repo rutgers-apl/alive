@@ -1,3 +1,4 @@
+; expect 0 compositions
 Name: (AddSub:1098;Select:699@%umax)
 Pre: true
   %b1 = add %b, 1

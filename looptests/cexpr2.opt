@@ -1,3 +1,4 @@
+; expect 0 compositions
 ; should be rejected
 ; matching pattern %A against code %v2 is impossible, because %A occurs in the final pattern
 Name: Select:465

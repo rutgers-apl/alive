@@ -1,3 +1,4 @@
+; expect 1 compositions
 Name: InstCombineShift: 812
 Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
 %r = ashr %Op0, C

@@ -1,3 +1,4 @@
+; expect 1 composition
 ; (AddSub:1043@%or;AndOrXor:2243
 
 Name: AddSub:1043

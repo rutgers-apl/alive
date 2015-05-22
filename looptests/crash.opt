@@ -1,4 +1,5 @@
-; should reject
+; expect 2 compositions
+
 Name: AddSub:1265
 Pre: WillNotOverflowSignedAdd(%x,trunc(C)) && (C & (-1 << (width(%x) - 1))) == 0
 %sx = sext %x
@@ -15,3 +16,4 @@ Pre: WillNotOverflowSignedAdd(%x,%y)
   =>
 %xy = add nsw %x, %y
 %c = sext %xy
+

@@ -1,0 +1,14 @@
+; expect 2 compositions
+Name: fold mul
+%z = mul %y, C1
+%x = mul %z, C2
+=>
+%x = mul %y, C1*C2
+
+Name: factor
+%ab = mul %a, %b
+%cb = mul %c, %b
+%r = add %ab, %cb
+=>
+%ac = add %a, %c
+%r = mul %ac, %b

@@ -1,3 +1,4 @@
+; expect 1 composition
 Name: AddSub:1131
 Pre: (isPowerOf2((C2 + 1)) && ((C2 | computeKnownZeroBits(%Y)) == -1))
   %LHS = xor %Y, C2

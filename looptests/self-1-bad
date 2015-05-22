@@ -1,3 +1,4 @@
+; expect 1 loop
 ; FIXME: require non-constant
 Name: AndOrXor:1175
 Pre: MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))

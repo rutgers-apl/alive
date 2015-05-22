@@ -1,3 +1,4 @@
+; expect 3 compositions
 Name: AndOrXor:1346 (sext)
 %op0 = sext %x
 %op1 = sext %y

@@ -1,3 +1,4 @@
+; expect 2 composition
 Name: AddSub:1624
 %Op0 = or %A, %B
 %Op1 = xor %A, %B

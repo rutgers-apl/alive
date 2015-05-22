@@ -1,3 +1,4 @@
+; expect 2 compositions
 ; solved
 Name: AndOrXor:716
 %a1 = and %a, %b

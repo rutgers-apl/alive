@@ -1,3 +1,4 @@
+; expect 1 loop
 Name: AndOrXor:2429
 %op0 = and %x, %y
 %r = xor %op0, -1
