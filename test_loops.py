@@ -17,11 +17,13 @@ def compose_sequence(opts, up_to=None):
       for o2 in loops.all_bin_compositions(o, opts[n], immediate=False):
         yield o2
 
-def verify_opt(opt, quiet=True):
+#FIXME: default limit should be None
+def verify_opt(opt, quiet=False, limit=500):
   logger = logging.getLogger('test_loops.verify')
   logger.info('checking %s', opt.name)
 
   if not quiet:
+    print
     opt.dump()
 
   users_count = alive.countUsers(opt.src_bb)
@@ -32,6 +34,9 @@ def verify_opt(opt, quiet=True):
 
   proofs = 0
   for types in opt.type_models():
+    if limit and proofs >= limit:
+      logger.warning('Hit limit while checking %s', opt.name)
+      break
     alive.set_ptr_size(types)
     alive.fixupTypes(opt.src, types)
     alive.fixupTypes(opt.tgt, types)
@@ -47,7 +52,7 @@ def verify_opt(opt, quiet=True):
     sys.stderr.write('\n')
 
 
-def test_composition(opts, name='anon', verify=False, quiet=True):
+def test_composition(opts, name='anon', verify=False, quiet=False):
   '''
   Attempt to merge the sequence of optimizations into a single one.
   '''
@@ -68,7 +73,7 @@ def test_composition(opts, name='anon', verify=False, quiet=True):
 def count_src(o):
   return sum(1 for v in o.src.itervalues() if isinstance(v, loops.Instr))
 
-def test_loop(opts, name='anon', verify=False, quiet=True):
+def test_loop(opts, name='anon', verify=False, quiet=False):
   '''
   Determine whether this sequence of optimizations loops.
   '''
@@ -198,7 +203,7 @@ def main():
 
   for f in itertools.chain.from_iterable(args.compose):
     opts = loops.parse_transforms(f.read())
-    comps = test_composition(opts, f, verify=args.verify, quiet=False)
+    comps = test_composition(opts, f.name, verify=args.verify, quiet=False)
     print '{}: got {} composition{}'.format(f.name, comps,
       '' if comps == 1 else 's')
   
