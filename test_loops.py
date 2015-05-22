@@ -154,6 +154,7 @@ def run_tests(verify=False):
       errors += 1
 
   statusmsg()
+  sys.stderr.write('\n')
   return not failed and not errors
 
 
