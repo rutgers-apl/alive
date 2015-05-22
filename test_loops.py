@@ -134,9 +134,10 @@ def run_tests(verify=False):
 
     try:
       if expecting == 'comp':
-        if test_composition(opts, f, verify=verify) != expected:
+        comps = test_composition(opts, f, verify=verify)
+        if comps != expected:
           logger.warning('%s: Got %r comps, expected %r',
-                         f, comps, expected_comps)
+                         f, comps, expected)
           failed += 1
         continue
 
