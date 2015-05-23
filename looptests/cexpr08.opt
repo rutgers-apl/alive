@@ -1,0 +1,15 @@
+; expect 0 composition
+
+Name: AddSub:1667
+Pre: true
+  %Op1 = mul %A, C
+  %r = sub %X, %Op1
+=>
+  %m = mul %A, -C
+  %r = add %X, %m
+
+Name: AddSub:1156
+Pre: true
+  %a = add %b, %b
+=>
+  %a = shl %b, 1

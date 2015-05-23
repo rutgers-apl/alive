@@ -1,0 +1,28 @@
+; expect 0 compositions
+; code_at %op0 or %op1 : extended pattern uses intermediate value (%o)
+
+Name: (AndOrXor:732-1@%a1;AndOrXor:144)
+Pre: ((C11 & C2) == C11)
+  %op = or %X, C1
+  %a1 = and %op, C11
+  %op0 = icmp ne %a1, 0
+  %a2 = and %op, C2
+  %op1 = icmp ne %a2, 0
+  %r = and %op0, %op1
+=>
+  %o = or %X, (C1 & C11)
+  %r1 = and %o, C11
+  %r = icmp ne %r1, 0
+
+Name: (AndOrXor:732-1@%a1;AndOrXor:144)
+Pre: ((C11 & C2) == C11)
+  %op = or %X, C1
+  %a1 = and %op, C11
+  %op0 = icmp ne %a1, 0
+  %a2 = and %op, C2
+  %op1 = icmp ne %a2, 0
+  %r = and %op0, %op1
+=>
+  %o = or %X, (C1 & C11)
+  %r1 = and %o, C11
+  %r = icmp ne %r1, 0

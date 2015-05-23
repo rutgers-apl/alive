@@ -1,6 +1,5 @@
-; expect 0 compositions
+; expect 1 composition
 ; unifies pattern instrs (%sum and %rhs)
-; circular union (%X = add %X, %X)
 
 Name: (AddSub:1574;Select:967a@%dif)
 Pre: (C0 == (C - C2))

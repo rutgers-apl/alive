@@ -1,0 +1,21 @@
+; expect 1 composition
+
+Name: AddSub:1142
+Pre: isSignBit(C1)
+  %b = xor %a, C1
+  %d = add %b, C2
+=>
+  %d = add %a, (C1 ^ C2)
+;
+Name: AddSub:1156
+Pre: true
+  %a = add %b, %b
+=>
+  %a = shl %b, 1
+
+; ame: (AddSub:1142;AddSub:1156)
+; Pre: isSignBit(C1)
+;   %b = xor (C1 ^ C2), C1
+;   %d = add %b, C2
+; =>
+;   %d = shl (C1 ^ C2), 1
