@@ -1,0 +1,17 @@
+Errors:
+- take union of flags when doing matching (no, the current version is correct)
+- consider types when matching and unifying
+
+Enhancements:
+- handle general icmp matching
+- collect more stats about loops, eg what opts are involved
+
+- handle nsw:0 et al
+- isConstant()
+
+- Prof: header?
+
+Possible:
+- simplify EquivalenceClass into DisjointSubsets
+- break compose() into smaller pieces
+- rework Type to make finding subtype and lub easier
