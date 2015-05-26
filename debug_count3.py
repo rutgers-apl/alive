@@ -11,7 +11,7 @@ sys.stderr.write('reading master.opt\n')
 opts = parse_transforms(open('master.opt').read())
 
 #opts = opts[0:1]
-opts = opts[0:40]
+#opts = opts[0:20]
 
 
 
@@ -27,17 +27,18 @@ sat_checks = 0
 def count_src(o):
   return sum(1 for v in o.src.itervalues() if isinstance(v, Instr))
 
-for o1 in opts:
-  for o2 in opts:
+for i1 in range(0,len(opts)):
+  o1 = opts[i1]
+  for i2 in range(i1,len(opts)):
+    o2 = opts[i2]
     for o12 in all_bin_compositions(o1,o2,False):
 #       sat_checks += 1
 #       if not satisfiable(o12):
 #         unsat += 0
 #         continue
 
-      for o3 in opts:
-        if o3 is o1 or o3 is o2:
-          continue
+      for i3 in range(i2, len(opts)):
+        o3 = opts[i3]
 
         for o123 in all_bin_compositions(o12, o3, False):
 #           sat_checks += 1

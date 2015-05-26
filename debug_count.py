@@ -23,11 +23,9 @@ unsat = 0
 loops = 0
 errors = 0
 
-for o1 in opts:
-  for o2 in opts:
-    if o1 is o2:
-      continue
-    
+for i1 in range(0,len(opts)):
+  o1 = opts[i1]
+  for i1 in range(i1+1,len(opts)):
     try:
       for o3 in all_bin_compositions(o1,o2, False):
         
