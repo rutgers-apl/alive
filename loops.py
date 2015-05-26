@@ -851,9 +851,6 @@ class Grafter(CopyBase):
       return self.subtree(self.replace[key][1], self.replace[key][0])
     
     self.depth += 1
-    if self.depth > 20:
-      raise AliveError('Grafter: depth exceeded')
-
     new_term = term.visit(self, sort)
     self.depth -= 1
     
