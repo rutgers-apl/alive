@@ -96,7 +96,7 @@ def test_loop(opts, name='anon', verify=False, quiet=False):
         continue
 
       if loops.satisfiable(oo):
-        logger.info('%s satisfiable')
+        logger.info('loop:%s\n%s\n', o, oo)
         return True
 
     return False
