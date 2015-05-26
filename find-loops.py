@@ -38,7 +38,6 @@ def main():
 
   sys.stderr.write('Reading ' + args.file.name + '\n')
   opts = loops.parse_transforms(args.file.read())
-  opts = opts[0:10]
   sys.stderr.write('{} optimizations'.format(len(opts)))
 
   count = 0
