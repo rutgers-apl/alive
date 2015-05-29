@@ -2,7 +2,7 @@
 import loops, alive
 import os, sys, re, logging, argparse, itertools
 
-def compose_sequence(opts, up_to=None):
+def compose_sequence(opts, up_to=None, on_error=None):
   'Yield all compositions of the sequence opts[0:up_to].'
   up_to = len(opts) if up_to is None else up_to
 
@@ -13,8 +13,8 @@ def compose_sequence(opts, up_to=None):
     yield opts[0]
   else:
     n = up_to - 1
-    for o in compose_sequence(opts, up_to=n):
-      for o2 in loops.all_bin_compositions(o, opts[n], immediate=False):
+    for o in compose_sequence(opts, n, on_error):
+      for o2 in loops.all_bin_compositions(o, opts[n], on_error):
         yield o2
 
 #FIXME: default limit should be None
@@ -52,7 +52,7 @@ def verify_opt(opt, quiet=False, limit=500):
     sys.stderr.write('\n')
 
 
-def test_composition(opts, name='anon', verify=False, quiet=False):
+def test_composition(opts, name='anon', verify=False, quiet=False, on_error=None):
   '''
   Attempt to merge the sequence of optimizations into a single one.
   '''
@@ -60,7 +60,7 @@ def test_composition(opts, name='anon', verify=False, quiet=False):
   logger.info('%s: composing %s opts', name, len(opts))
   count = 0
   
-  for o in compose_sequence(opts):
+  for o in compose_sequence(opts, on_error=on_error):
     if verify:
       verify_opt(o, quiet)
 
@@ -73,19 +73,19 @@ def test_composition(opts, name='anon', verify=False, quiet=False):
 def count_src(o):
   return sum(1 for v in o.src.itervalues() if isinstance(v, loops.Instr))
 
-def test_loop(opts, name='anon', verify=False, quiet=False):
+def test_loop(opts, name='anon', verify=False, quiet=False, on_error=None):
   '''
   Determine whether this sequence of optimizations loops.
   '''
   logger = logging.getLogger('test_loops.test_loop')
   logger.info('%s: checking for %s-cycle', name, len(opts))
   
-  for o in compose_sequence(opts):
+  for o in compose_sequence(opts, on_error=on_error):
     if verify:
       verify_opt(o, quiet)
 
     o_src = count_src(o)
-    for oo in loops.all_bin_compositions(o, o, immediate=False):
+    for oo in loops.all_bin_compositions(o, o, on_error):
       if verify:
         verify_opt(oo, quiet)
 
@@ -106,7 +106,7 @@ def run_tests(verify=False):
 
   complete = 0
   failed = 0
-  errors = 0
+  errors = [0]
   test_names = filter(lambda f: not f.startswith('unknown'),
                       os.listdir('looptests'))
   tests = len(test_names)
@@ -114,10 +114,13 @@ def run_tests(verify=False):
 
   label = re.compile(r'^; expect (\d+) (comp|loop)')
 
+  def count_error(*args):
+    errors[0] += 1
+
   def statusmsg():
     sys.stderr.write(
       '\r{}% complete, {} failed, {} errors'.format(
-        complete*100/tests, failed, errors))
+        complete*100/tests, failed, errors[0]))
 
   for f in test_names:
     logger.info('reading looptests/%s', f)
@@ -139,7 +142,7 @@ def run_tests(verify=False):
 
     try:
       if expecting == 'comp':
-        comps = test_composition(opts, f, verify=verify)
+        comps = test_composition(opts, f, verify=verify, on_error=count_error)
         if comps != expected:
           logger.warning('%s: Got %r comps, expected %r',
                          f, comps, expected)
@@ -147,7 +150,7 @@ def run_tests(verify=False):
         continue
 
       if expecting == 'loop':
-        got = test_loop(opts, f, verify=verify)
+        got = test_loop(opts, f, verify=verify, on_error=count_error)
         if got and not expected:
           logger.warning('%s: Unexpected loop', f)
           failed += 1
@@ -157,11 +160,11 @@ def run_tests(verify=False):
 
     except Exception as e:
       logger.exception('Got %r while testing %s', e, f)
-      errors += 1
+      errors[0] += 1
 
   statusmsg()
   sys.stderr.write('\n')
-  return not failed and not errors
+  return not failed and not errors[0]
 
 
 

@@ -21,19 +21,22 @@ count = 0
 increasing = 0
 unsat = 0
 loops = 0
-errors = 0
+errors = [0]
+
+def count_error(*a):
+  errors[0] += 1
 
 for i1 in range(0,len(opts)):
   o1 = opts[i1]
   for i1 in range(i1+1,len(opts)):
     try:
-      for o3 in all_bin_compositions(o1,o2, False):
+      for o3 in all_bin_compositions(o1,o2, count_error):
         
         o3_src = sum(1 for v in o3.src.itervalues() if isinstance(v, Instr))
         
         #o3c = o3.copy()
         
-        for oo in all_bin_compositions(o3, o3, False):
+        for oo in all_bin_compositions(o3, o3, count_error):
 
           count += 1
           oo_src = sum(1 for v in oo.src.itervalues() if isinstance(v, Instr))
@@ -58,7 +61,7 @@ for i1 in range(0,len(opts)):
 
     except Exception, e:
       logging.exception('combining <%s> <%s>', o1.name, o2.name)
-      errors += 1
+      errors[0] += 1
 
 sys.stderr.write('\n')
 print
@@ -67,4 +70,4 @@ print 'final count', count
 print 'loops', loops
 print 'unsat', unsat
 print 'increasing', increasing
-print 'errors', errors
+print 'errors', errors[0]

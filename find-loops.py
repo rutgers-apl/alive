@@ -2,18 +2,18 @@
 import loops
 import argparse, logging, itertools, sys
 
-def search(opts, n):
+def search(opts, n, on_error=None):
   'Generate candidate n-cycles'
   if n == 1:
     for i1,o in itertools.izip(itertools.count(), opts):
       yield (o,i1,(o,))
     return
 
-  for (o1,i1,oz) in search(opts, n-1):
+  for (o1,i1,oz) in search(opts, n-1, on_error):
     for i2 in range(i1, len(opts)):
       o2 = opts[i2]
       os = oz + (o2,)
-      for c in loops.all_bin_compositions(o1,o2):
+      for c in loops.all_bin_compositions(o1, o2, on_error):
         yield (c,i2, os)
 
 status = '\rTested: {} SatChecks: {} Loops: {}'
@@ -43,10 +43,14 @@ def main():
   count = 0
   sat_checks = 0
   cycles = 0
+  errors = [0]
+  
+  def count_error(e,o1,o2):
+    errors[0] += 1
 
   for o,_,os in search(opts, args.length):
     o_src = count_src(o)
-    for oo in loops.all_bin_compositions(o,o,False):
+    for oo in loops.all_bin_compositions(o,o,count_error):
       sys.stderr.write(status.format(count, sat_checks, cycles))
       count += 1
 
@@ -72,6 +76,7 @@ def main():
   print 'final count', count
   print 'loops', cycles
   print 'sat_checks', sat_checks
+  print 'errors', errors[0]
 
 if __name__ == '__main__':
   main()

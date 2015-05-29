@@ -258,14 +258,14 @@ def test_new_compose_self(sample = None, check_opts = False):
   if len(opts) == 1:
     opts.append(opts[0])
 
-  for c in all_bin_compositions(opts[0],opts[1], True):
+  for c in all_bin_compositions(opts[0],opts[1]):
     c.dump()
     b = satisfiable(c)
     print 'sat:', b
     if check_opts:
       check_opt(c)
 
-    for cc in all_bin_compositions(c,c, True):
+    for cc in all_bin_compositions(c,c):
       cc.dump()
       b = satisfiable(cc)
       print 'sat:', b

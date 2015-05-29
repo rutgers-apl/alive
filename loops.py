@@ -841,7 +841,7 @@ class Grafter(CopyBase):
     return new_term
 
   def subtree(self, term, sort):
-    self.logger.debug('(%s) subtree |%s| %s', self.depth, term, sort)
+    self.logger.debug('(%s) subtree %s |%s|#%s', self.depth, sort, term, id(term))
     key = (sort,term)
     if key in self.done:
       return self.done[key]
@@ -1383,7 +1383,7 @@ def satisfiable(opt):
   return False
   
 
-def all_bin_compositions(o1, o2, immediate=True):
+def all_bin_compositions(o1, o2, on_error=None):
   logger.info('all_bin_compositions |%s| |%s|', o1.name, o2.name)
   #assert o1 is not o2
 
@@ -1392,7 +1392,7 @@ def all_bin_compositions(o1, o2, immediate=True):
     if o12: 
       yield o12
   except Exception as e:
-    if immediate: 
+    if not on_error or on_error(e, o1, o2):
       raise
     logger.exception('all_bin_compositions %r\n;\n%s\n;\n%s', e, o1, o2)
   
@@ -1403,7 +1403,7 @@ def all_bin_compositions(o1, o2, immediate=True):
       o12 = compose(o1, o2, pattern_at = r)
       if o12: yield o12
     except Exception as e:
-      if immediate:
+      if not on_error or on_error(e, o1, o2):
         raise
       logger.exception('all_bin_compositions %r\n;@%s\n%s\n;\n%s', e, r, o1, o2)
   
@@ -1415,7 +1415,7 @@ def all_bin_compositions(o1, o2, immediate=True):
       o12 = compose(o1, o2, code_at = r)
       if o12: yield o12
     except Exception as e:
-      if immediate:
+      if not on_error or on_error(e, o1, o2):
         raise
       logger.exception('all_bin_compositions %r\n;\n%s\n;@%s\n%s', e, o1, r, o2)
 
