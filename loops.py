@@ -688,6 +688,10 @@ class Matcher(Visitor):
     return pattern.visit(self, code)
 
   def subtree(self, pat, code):
+    if (PATTERN,pat) in self.eqs and (CODE,code) in self.eqs and \
+        self.eqs.keys_unified((PATTERN,pat),(CODE,code)):
+      return True
+
     m = self(pat, code)
     self.eqs.unify(pat, code)
     return m
