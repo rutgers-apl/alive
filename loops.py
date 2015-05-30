@@ -317,6 +317,33 @@ def copy_type(ty):
 class AliveTypeError(AliveError):
   pass
 
+class Printer(Visitor):
+  def __init__(self, names):
+    self.names = names
+
+  def visit_TruePred(self, t):
+    return "true"
+
+  def visit_PredNot(self, t):
+    return '!' + t.visit(self)
+
+  def visit_PredAnd(self, t):
+    return '(' + ' && '.join(s.visit(self) for s in t.args) + ')'
+
+  def visit_PredOr(self, t):
+    return '(' + ' || '.join(s.visit(self) for s in t.args) + ')'
+
+  def visit_BinaryBoolPred(self, t):
+    lhs = t.v1.getName() if t.v1 in self.names else repr(t.v1)
+    rhs = t.v2.getName() if t.v2 in self.names else repr(t.v2)
+
+    return '(%s %s %s)' % (lhs, t.opnames[t.op], rhs)
+
+  def visit_LLVMBoolPred(self, t):
+    args = (a.getName() if a in self.names else repr(a) for a in t.args)
+
+    return '%s(%s)' % (t.opnames[t.op], ', '.join(args))
+
 class Transformation(object):
   '''Represents a single Alive transformation (optimization).'''
   
@@ -362,17 +389,21 @@ class Transformation(object):
           else:
             yield '  %s' % v
 
+    names = self.src.values()
+    pre = self.pre.visit(Printer(names))
+
     return 'Name: {0}\nPre: {1}\n{2}\n=>\n{3}'.format(
-      self.name, str(self.pre),
+      self.name, pre,
       '\n'.join(lines(self.src_bb, set())),
       '\n'.join(lines(self.tgt_bb, self.tgt_skip)))
 
   def dump(self):
-    print 'Name:', self.name
-    print 'Pre:', str(self.pre)
-    print_prog(self.src_bb, set())
-    print '=>'
-    print_prog(self.tgt_bb, self.tgt_skip)
+    print str(self)
+#     print 'Name:', self.name
+#     print 'Pre:', str(self.pre)
+#     print_prog(self.src_bb, set())
+#     print '=>'
+#     print_prog(self.tgt_bb, self.tgt_skip)
 #     print
 #     print 'src', self.src
 #     print 'tgt', self.tgt
