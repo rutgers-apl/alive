@@ -897,8 +897,9 @@ class Grafter(CopyBase):
         name = term.getName() + str(i)
       
       new_term.setName(name)
-    
-    self.done[key] = new_term
+
+    if not isinstance(new_term, Constant) or isinstance(new_term, ConstantVal):
+      self.done[key] = new_term
     return new_term
 
   def visit_Input(self, term, sort):
@@ -1099,7 +1100,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
   # cycle check
   code_uses = all_uses(code)
-  pat_uses = all_uses(op2.src_root())
+  pat_uses = all_uses(pat)
   extended_pat_uses = _DependencyFinder(set.union(pat_uses[pat], [pat]))(op2.src_root())
   if log.isEnabledFor(logging.DEBUG):
     log.debug('\ncode_uses:\n' + pformat(code_uses, indent=2)
