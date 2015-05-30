@@ -1300,6 +1300,10 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
   # forget the new operands
   # (this is okay, because fixupTypes now recurses into operands)
+  for k,v in graft.ids.iteritems():
+    if k not in src and not isinstance(v, Instr):
+      src[k] = v
+
   graft.ids = copy(src)
 
   # create new target
