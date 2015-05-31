@@ -9,6 +9,7 @@ import alive
 from pprint import pprint, pformat
 import logging
 import collections
+import subsets
 
 NAME, PRE, SRC_BB, TGT_BB, SRC, TGT, SRC_USED, TGT_USED, TGT_SKIP = range(9)
 
@@ -548,150 +549,19 @@ class Transformation(object):
 
 # ----
 
-class _OccursChecker(Visitor):
-  def __init__(self, var):
-    self.var = var
-
-  def visit_Input(self, t):
-    return t == self.var
-
-  def visit_CopyOperand(self, t):
-    return t.visit(self)
-
-  def visit_BinOp(self, t):
-    return t.v1.visit(self) or t.v2.visit(self)
-
-  def visit_ConversionOp(self, t):
-    return t.v.visit(self)
-
-  def visit_Icmp(self, t):
-    return t.v1.visit(self) or t.v2.visit(self)
-
-  def visit_Select(self, t):
-    return t.c.visit(self) or t.v1.visit(self) or t.v2.visit(self)
-
-  def visit_ConstantVal(self, t):
-    return False
-
-  def visit_UndefVal(self, t):
-    return False
-
-  def visit_CnstUnaryOp(self, t):
-    return t.v.visit(self)
-
-  def visit_CnstBinaryOp(self, t):
-    return t.v1.visit(self) or t.v2.visit(self)
-
-  def visit_CnstFunction(self, t):
-    return any(a.visit(self) for a in t.args)
-
-def occurs(var, term):
-  '''Return true if this variable occurs in the term'''
-
-  return term.visit(_OccursChecker(var))
-
 def is_const(value):
   return isinstance(value, Constant) or (isinstance(value, Input) and value.name[0] == 'C')
 
-class Uncomposable(AliveError):
-  pass
+class TaggedValue(subsets.Tag):
+  def __repr__(self):
+    if isinstance(self.val, Instr) and hasattr(self.val, 'name'):
+      return '{}({} = {})'.format(type(self).__name__, self.val.name, self.val)
+    return '{}({})'.format(type(self).__name__, self.val)
+
+class Pattern(TaggedValue): pass
+class Code(TaggedValue): pass
 
 # --
-
-PATTERN = 0
-CODE = 1
-
-class EquivalenceClass(object):
-  '''
-  Stores (sort,value) keys in equivalence classes. Uses a disjoint subset structure.
-  '''
-  #TODO: efficiency
-  #TODO: really, this could be generalized to arbitrary keys.
-  #      is it worth the trouble of keeping the pattern and code values in different sets?
-
-  logger = logger.getChild('EquivalenceClass')
-
-  def __init__(self):
-    # values are stored as (sort, Value) pairs, to keep
-    # code and pattern values distinct
-    # each input is mapped to an equivalence class by a chain
-    # of links in parent. the root is indicated by None
-    self._parent = {}
-    self._eqs = {}
-
-  def __contains__(self, key):
-    return key in self._parent
-
-  def key_reps(self):
-    for (sort,value) in self._parent:
-      rep = self.rep(sort, value)
-      yield ((sort,value),rep)
-
-  def class_items(self):
-    return self._eqs.iteritems()
-
-  def reps(self):
-    return self._eqs.iterkeys()
-
-  def rep(self, sort, value, ensure=False):
-    key = (sort, value)
-    
-    if key not in self._parent:
-      if not ensure:
-        raise KeyError(key)
-
-      self._parent[key] = None
-      eq = (set(), set())
-      eq[sort].add(value)
-      self._eqs[key] = eq
-      return key
-
-    while self._parent[key] is not None:
-      key = self._parent[key]
-
-    return key
-
-  def eqs(self, sort, value):
-    rep = self.rep(sort, value)
-    return self._eqs[rep]
-
-  def _unify_reps(self, rep1, rep2):
-    if self.logger.isEnabledFor(logging.DEBUG):
-      self.logger.debug('prep=%s; crep=%s', rep1, rep2)
-      self.logger.debug('classes\n' + pformat(self._eqs, indent=2))
-
-    if rep1 == rep2:
-      self.logger.info('already unified')
-      return
-
-    self.logger.debug('removing %s', rep2)
-    self._parent[rep2] = rep1
-    eq2 = self._eqs.pop(rep2)
-    eq1 = self._eqs[rep1]
-
-    eq1[PATTERN].update(eq2[PATTERN])
-    eq1[CODE].update(eq2[CODE])
-
-    self.logger.debug('updated %s to %s', rep1, eq1)
-
-  def unify_keys(self, key1, key2):
-    self.logger.info('unify keys %s %s', key1, key2)
-
-    rep1 = self.rep(*key1, ensure=True)
-    rep2 = self.rep(*key2, ensure=True)
-
-    self._unify_reps(rep1, rep2)
-
-  def unify(self, pat, code):
-    self.logger.info('unify |%s| |%s|', pat, code)
-
-    prep = self.rep(PATTERN, pat, ensure=True)
-    crep = self.rep(CODE, code, ensure=True)
-
-    self._unify_reps(prep, crep)
-
-  def keys_unified(self, key1, key2):
-    return self.rep(*key1) == self.rep(*key2)
 
 class Matcher(Visitor):
   '''
@@ -700,17 +570,18 @@ class Matcher(Visitor):
 
   logger = logger.getChild('Matcher')
 
-  def __init__(self, eqs):
-    self.eqs = eqs
+  def __init__(self, subsets):
+    self.subsets = subsets
 
   def __call__(self, pattern, code):
     self.logger.info('matching |%s| |%s|', pattern, code)
-    if (PATTERN,pattern) in self.eqs and (CODE,code) in self.eqs and \
-        self.eqs.keys_unified((PATTERN,pattern),(CODE,code)):
-      return True
 
+    pkey = Pattern(pattern)
+    ckey = Code(code)
     if isinstance(pattern, Input) or isinstance(code, Input):
-      self.eqs.unify(pattern, code)
+      self.subsets.add_key(pkey)
+      self.subsets.add_key(ckey)
+      self.subsets.unify(pkey, ckey)
       return True
 
     if pattern.__class__ is not code.__class__:
@@ -719,12 +590,16 @@ class Matcher(Visitor):
     return pattern.visit(self, code)
 
   def subtree(self, pat, code):
-    if (PATTERN,pat) in self.eqs and (CODE,code) in self.eqs and \
-        self.eqs.keys_unified((PATTERN,pat),(CODE,code)):
+    pkey = Pattern(pat)
+    ckey = Code(code)
+    if pkey in self.subsets and ckey in self.subsets and \
+        self.subsets.unified(pkey, ckey):
       return True
 
     m = self(pat, code)
-    self.eqs.unify(pat, code)
+    self.subsets.add_key(pkey)
+    self.subsets.add_key(ckey)
+    self.subsets.unify(pkey, ckey)
     return m
 
   def visit_BinOp(self, pat, code):
@@ -767,8 +642,8 @@ class PatternUnifier(CopyBase):
 
   logger = logger.getChild('PatternUnifier')
 
-  def __init__(self, eqs):
-    self.eqs = eqs
+  def __init__(self, subsets):
+    self.subsets = subsets
 
   def __call__(self, pat1, pat2):
     logger.info('unifying |%s| |%s|', pat1, pat2)
@@ -777,7 +652,9 @@ class PatternUnifier(CopyBase):
       return pat1
 
     if isinstance(pat1, Input) or isinstance(pat2, Input):
-      self.eqs.unify_keys((PATTERN, pat1), (PATTERN, pat2))
+      self.subsets.add_key(Pattern(pat1))
+      self.subsets.add_key(Pattern(pat2))
+      self.subsets.unify(Pattern(pat1), Pattern(pat2))
       return pat1  # pick one arbitrarily, since they are equal
 
     if pat1.__class__ is not pat2.__class__:
@@ -865,8 +742,8 @@ class Grafter(CopyBase):
     self.done = {}
     self.depth = 0
 
-  def operand(self, term, sort):
-    new_term = self.subtree(term, sort)
+  def operand(self, term, tag):
+    new_term = self.subtree(term, tag)
     
     name = new_term.getUniqueName()
     if name not in self.ids:
@@ -875,18 +752,19 @@ class Grafter(CopyBase):
     
     return new_term
 
-  def subtree(self, term, sort):
-    self.logger.debug('(%s) subtree %s |%s|#%s', self.depth, sort, term, id(term))
-    key = (sort,term)
+  def subtree(self, term, tag):
+    self.logger.debug('(%s) subtree %s |%s|#%s', self.depth, tag.__name__, term, id(term))
+    key = tag(term)
     if key in self.done:
+      self.logger.debug('(%s) reusing %s', self.depth, self.done[key])
       return self.done[key]
     
     if key in self.replace:
       self.logger.debug('substituting %s -> %s', key, self.replace[key])
-      return self.subtree(self.replace[key][1], self.replace[key][0])
+      return self.subtree(self.replace[key].val, type(self.replace[key]))
     
     self.depth += 1
-    new_term = term.visit(self, sort)
+    new_term = term.visit(self, tag)
     self.depth -= 1
     
     if isinstance(new_term, Instr) and not hasattr(new_term, 'name'):
@@ -902,9 +780,9 @@ class Grafter(CopyBase):
       self.done[key] = new_term
     return new_term
 
-  def visit_Input(self, term, sort):
-    if (sort,term) in self.replace:
-      raise AliveError('Grafter: unexpected visit_Input({},{})'.format(term,sort))
+  def visit_Input(self, term, tag):
+    if tag(term) in self.replace:
+      raise AliveError('Grafter: unexpected visit_Input({},{})'.format(term,tag.__name__))
 
     name = term.getName()
     i = 0
@@ -912,14 +790,14 @@ class Grafter(CopyBase):
       i += 1
       name = term.getName() + str(i)
 
-    self.logger.debug('new input %s for (%s, %s)', name, sort, term)
+    self.logger.debug('new input %s for %s(%s)', name, tag.__name__, term)
     new_term = Input(name, copy_type(term.type))
     self.ids[name] = new_term
     return new_term
 
 # --
 
-def _cycle_check(eqs, code_uses, pat_uses, sorted, parents):
+def _cycle_check(subsets, code_uses, pat_uses, sorted, parents):
   '''
   Used by compose to find cycles. Basic DFS, except the arcs are 
   determined by uses and eqs.
@@ -937,14 +815,16 @@ def _cycle_check(eqs, code_uses, pat_uses, sorted, parents):
       return not done[rep]
 
     done[rep] = False
-    (pvals,cvals) = eqs.eqs(*rep)
+    vals = subsets.subset(rep)
+    pvals = tuple(k.val for k in vals if isinstance(k, Pattern))
+    cvals = tuple(k.val for k in vals if isinstance(k, Code))
 
     log.debug('pvals: %s', pvals)
     log.debug('cvals: %s', cvals)
 
-    puses = imap(lambda n: (PATTERN,n), chain.from_iterable(pat_uses[p] for p in pvals))
-    cuses = imap(lambda n: (CODE,n), chain.from_iterable(code_uses[p] for p in cvals))
-    uses = set(eqs.rep(*k) for k in chain(puses,cuses) if k in eqs)
+    puses = imap(Pattern, chain.from_iterable(pat_uses[p] for p in pvals))
+    cuses = imap(Code, chain.from_iterable(code_uses[p] for p in cvals))
+    uses = set(subsets.rep(k) for k in chain(puses,cuses) if k in subsets)
 
     for k in uses:
       parents[k].add(rep)
@@ -954,7 +834,7 @@ def _cycle_check(eqs, code_uses, pat_uses, sorted, parents):
     done[rep] = True
     return cycle
 
-  return any(search(rep) for rep in eqs.reps() if rep not in done)
+  return any(search(rep) for rep in subsets.reps() if rep not in done)
 
 def _validate(op):
   '''
@@ -999,17 +879,20 @@ def _validate(op):
       log.error('Constant expression in source\n%s', op)
       raise AliveError('Constant expression in source')
 
-def _postunify_patterns(eqs):
+def _postunify_patterns(subsets):
   log = logger.getChild('compose.postunify_patterns')
 
-  items = tuple(eqs.class_items())
+  items = tuple(subsets.subset_items())
   rep_pinstrs = {}
   rep_cinstr = set()
-  unify = PatternUnifier(eqs)
-  match = Matcher(eqs)
-  for rep,(pvals,cvals) in items:
-    pinstrs = tuple(v for v in pvals if isinstance(v, Instr))
-    cinstrs = tuple(v for v in cvals if isinstance(v, Instr))
+  unify = PatternUnifier(subsets)
+  match = Matcher(subsets)
+  for rep,keys in items:
+    log.debug('checking %s: %s', rep, keys)
+    pinstrs = tuple(k.val for k in keys
+                      if isinstance(k, Pattern) and isinstance(k.val, Instr))
+    cinstrs = tuple(k.val for k in keys
+                      if isinstance(k, Code) and isinstance(k.val, Instr))
 
     if len(cinstrs) > 1:
       log.info('reject: unified distinct code instrs\n%s', cinstrs)
@@ -1019,7 +902,7 @@ def _postunify_patterns(eqs):
       continue
 
     pinstr = reduce(unify, pinstrs)
-    rep_pinstrs[rep] = (PATTERN,pinstr)
+    rep_pinstrs[rep] = Pattern(pinstr)
     log.debug('Unified %s to %s', pinstrs, pinstr)
 
     if cinstrs:
@@ -1035,8 +918,8 @@ def _postunify_patterns(eqs):
     did_something = False
 
     # use items() here because we may mutate rep_pinstrs
-    for rep,(_,pinstr) in rep_pinstrs.items():
-      rep2 = eqs.rep(*rep)
+    for rep,pinstr in rep_pinstrs.items():
+      rep2 = subsets.rep(rep)
       if rep != rep2:
         if rep in rep_cinstr and rep2 in rep_cinstr:
           log.info('reject: indirectly unified distinct code instrs')
@@ -1044,10 +927,10 @@ def _postunify_patterns(eqs):
 
         log.debug('Unifying %s and %s', rep, rep2)
         if rep2 in rep_pinstrs:
-          (_,pinstr2) = rep_pinstrs[rep2]
-          rep_pinstrs[rep2] = (PATTERN,unify(pinstr2, pinstr))
+          pinstr2 = rep_pinstrs[rep2]
+          rep_pinstrs[rep2] = Pattern(unify(pinstr2.val, pinstr.val))
         else:
-          rep_pinstrs[rep2] = (PATTERN,pinstr)
+          rep_pinstrs[rep2] = pinstr
 
         del rep_pinstrs[rep]
         if rep in rep_cinstr:
@@ -1078,22 +961,23 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   pat  = op2.src[pattern_at] if pattern_at else op2.src_root()
 
   # obtain all bindings
-  eqs = EquivalenceClass()
-  match = Matcher(eqs)
+  subs = subsets.DisjointSubsets()
+  match = Matcher(subs)
   if not match(pat, code):
     log.info('reject: No match')
     return None
 
   if log.isEnabledFor(logging.DEBUG):
-    log.debug('equivalence classes\n  ' + pformat(eqs._eqs, indent=2))
+    log.debug('equivalence classes\n  ' + pformat(subs._subset, indent=2))
 
   try:
-    rep_replace = _postunify_patterns(eqs)
+    rep_replace = _postunify_patterns(subs)
   except NotUnifiable:
     return None
 
   if log.isEnabledFor(logging.DEBUG):
-    log.debug('equivalence classes after postunify\n  ' + pformat(eqs._eqs, indent=2))
+    log.debug('equivalence classes after postunify\n  ' + pformat(subs._subset, indent=2))
+
 
   # check validity of equivalences
   # ------------------------------
@@ -1108,7 +992,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       + '\nextended_pat-uses:\n' + pformat(extended_pat_uses, indent=2))
 
   # these values occur in op1.tgt only
-  intermediates = {(CODE,v) for v in code_uses[code]
+  intermediates = {Code(v) for v in code_uses[code]
     if isinstance(v, Instr) and v.getName() not in op1.tgt_skip}
 
   log.debug('intermediates %s', intermediates)
@@ -1116,7 +1000,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   toposort = []
   direct_users = collections.defaultdict(set)
 
-  if _cycle_check(eqs, code_uses, pat_uses, toposort, direct_users):
+  if _cycle_check(subs, code_uses, pat_uses, toposort, direct_users):
     log.info('reject: unifications form a cycle')
     return None
 
@@ -1130,9 +1014,12 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
   # test each subset after any subsets which use it
   for rep in reversed(toposort):
-    pvals, cvals = eqs.eqs(*rep)
-    log.debug('checking %s: %s, %s', rep, pvals, cvals)
+    vals = subs.subset(rep)
+    log.debug('checking %s: %s', rep, vals)
     log.debug('rep_replace: %s', rep_replace)
+
+    pvals = set(k.val for k in vals if isinstance(k, Pattern))
+    cvals = set(k.val for k in vals if isinstance(k, Code))
 
     cinstr = tuple(v for v in cvals if isinstance(v, Instr))
     if len(cinstr) > 1:
@@ -1143,8 +1030,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     if len(cinstr) + len(pinstr) > 1:
       assert rep in rep_replace
 
-    const = tuple((CODE,v) for v in cvals if is_const(v)) \
-      + tuple((PATTERN,v) for v in pvals if is_const(v))
+    const = tuple(k for k in vals if is_const(k.val))
 
     if const and len(pinstr) + len(cinstr) > 0:
       log.info('reject: unified constant and instr')
@@ -1153,10 +1039,10 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     # find the replacement
     if cinstr:
       cinstr = cinstr[0]
-      rep_replace[rep] = (CODE, cinstr)
+      rep_replace[rep] = Code(cinstr)
 
       # check whether this instruction is an intermediate value
-      if (CODE, cinstr) in intermediates:
+      if Code(cinstr) in intermediates:
         log.debug('%s in intermediates', cinstr)
         if any(isinstance(v, Input) for v in cvals):
           log.info('reject: intermediate value matched with code input')
@@ -1171,7 +1057,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
       # check whether this instruction uses any cexprs
       cexprs = tuple(v for v in code_uses[cinstr]
-                      if (CODE,v) not in eqs and isinstance(v, Constant)
+                      if Code(v) not in subs and isinstance(v, Constant)
                         and not isinstance(v, ConstantVal))
 
       if not cexprs:
@@ -1187,18 +1073,18 @@ def compose(op1, op2, code_at = None, pattern_at = None):
         if cexpr in sub_cexprs: continue
 
         log.info('new constant for %s', cexpr)
-        new_c = (CODE, Input('C0', IntType()))
-        replace[(CODE,cexpr)] = new_c
-        pre3.append((new_c, (CODE,cexpr)))
+        new_c = Code(Input('C0', IntType()))
+        replace[Code(cexpr)] = new_c
+        pre3.append((new_c, Code(cexpr)))
 
     elif pinstr:
-      rep_replace[rep] = (PATTERN, pinstr[0])
+      rep_replace[rep] = Pattern(pinstr[0])
 
       # check whether this instructions dependencies unified with an intermediate value
       for pval in pat_uses[pinstr[0]]:
         log.debug('%s uses %s', pinstr[0], pval)
-        if (PATTERN,pval) in eqs:
-          if any((CODE,c) in intermediates for c in eqs.eqs(PATTERN,pval)[CODE]):
+        if Pattern(pval) in subs:
+          if any(c in intermediates for c in subs.subset(Pattern(pval))):
             log.info('reject: pattern instruction depends on intermediate value')
             return None
 
@@ -1207,7 +1093,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       # cvals contains inputs or cexprs
 
       # 1. make sure all literals agree
-      lits = set(v.val for s,v in const if isinstance(v, ConstantVal))
+      lits = set(k.val.val for k in const if isinstance(k.val, ConstantVal))
       if len(lits) > 1:
         log.info('reject: unified distinct literals')
         return None
@@ -1216,29 +1102,29 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       cexprs = tuple(v for v in cvals if isinstance(v, Constant) and not isinstance(v, ConstantVal))
       # 2a. constants and literals
       if lits:
-        new_c = (CODE, ConstantVal(lits.pop(), IntType()))
+        new_c = Code(ConstantVal(lits.pop(), IntType()))
         rep_replace[rep] = new_c
 
-        pre3.extend((new_c,(CODE,c)) for c in cexprs)
+        pre3.extend((new_c,Code(c)) for c in cexprs)
 
         continue
 
       # 2b. constant expressions
       if cexprs:
-        if any(sort == PATTERN and isinstance(r, Instr) for sort,r in
-                (rep_replace[r] for r in users.get(rep,()))) or \
+        if any(isinstance(k, Pattern) and isinstance(k.val, Instr) for k in
+                (rep_replace[r] for r in users.get(rep, ()))) or \
             not pvals.isdisjoint(extended_pat_uses) or \
             any(isinstance(v, Input) for v in cvals):
           log.debug('Used by a pattern instruction, extended pattern, or code input')
-          new_c = (CODE, Input('C0', IntType()))
+          new_c = Code(Input('C0', IntType()))
           rep_replace[rep] = new_c
-          pre3.extend((new_c, (CODE,c)) for c in cexprs)
+          pre3.extend((new_c, Code(c)) for c in cexprs)
           continue
 
-        new_c = (CODE, cexprs[0])
+        new_c = Code(cexprs[0])
         rep_replace[rep] = new_c
 
-        pre3.extend((new_c, (CODE,c)) for c in cexprs[1:])
+        pre3.extend((new_c, Code(c)) for c in cexprs[1:])
 
         continue
 
@@ -1248,10 +1134,10 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     else:
       # everything is an input, choose one arbitrarily
       # FIXME: make sure we don't pick an intermediate node?
-      rep_replace[rep] = (CODE, iter(cvals).next())
+      rep_replace[rep] = Code(iter(cvals).next())
 
   # replace everything with the rep's replacement
-  for key,rep in eqs.key_reps():
+  for key,rep in subs.key_reps():
     if key not in replace and key != rep_replace[rep]:
       replace[key] = rep_replace[rep]
 
@@ -1265,24 +1151,25 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
   # create new source
   if pattern_at:
-    if (PATTERN,pat) in replace:
+    if Pattern(pat) in replace:
       raise AliveError('Pattern match point already matched')
 
     root_uses = extended_pat_uses
     log.debug('root uses %s', root_uses)
 
-    if any(replace.get((PATTERN,v), ()) in intermediates for v in root_uses):
+    if any(replace.get(Pattern(v), ()) in intermediates for v in root_uses):
       log.info('reject: Extended pattern requires intermediate value.')
       if log.isEnabledFor(logging.DEBUG):
-        x = tuple((v, replace[(PATTERN,v)]) for v in root_uses
-                    if replace.get((PATTERN,v), ()) in intermediates)
+        x = tuple((v, replace[Pattern(v)]) for v in root_uses
+                    if replace.get(Pattern(v), ()) in intermediates)
         log.debug('Culprit: ' + pformat(x))
       return None
 
-    replace[(PATTERN,pat)] = (CODE, op1.src_root())
-    new_s = graft.operand(op2.src_root(), PATTERN)
+    replace[Pattern(pat)] = Code(op1.src_root())
+    log.debug('replace\n  ' + pformat(replace))
+    new_s = graft.operand(op2.src_root(), Pattern)
   else:
-    new_s = graft.operand(op1.src_root(), CODE)
+    new_s = graft.operand(op1.src_root(), Code)
 
   src = copy(graft.ids)
   tgt_skip = {r for r,i in src.iteritems() if isinstance(i, Instr)}
@@ -1291,9 +1178,11 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     log.debug('src ids:\n' + '\n'.join('  %s = %s' % it for it in src.iteritems()))
 
   # make precondition
-  pre1 = graft.subtree(op1.pre, CODE)
-  pre2 = graft.subtree(op2.pre, PATTERN)
-  pre3 = map(lambda ((s1,v1),(s2,v2)): BinaryBoolPred(0, graft.subtree(v1,s1), v2.visit(graft, s2)), pre3)
+  pre1 = graft.subtree(op1.pre, Code)
+  pre2 = graft.subtree(op2.pre, Pattern)
+  pre3 = (BinaryBoolPred(0, graft.subtree(k1.val, type(k1)), 
+                            k2.val.visit(graft, type(k2)))
+            for k1,k2 in pre3)
   pre = mk_conjoin(un_conjoin(pre1) + un_conjoin(pre2) + tuple(pre3))
 
   log.debug('pre: %s', pre)
@@ -1308,10 +1197,10 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
   # create new target
   if code_at:
-    replace[(CODE,code)] = (PATTERN, op2.tgt_root())
-    new_t = graft.operand(op1.tgt_root(), CODE)
+    replace[Code(code)] = Pattern(op2.tgt_root())
+    new_t = graft.operand(op1.tgt_root(), Code)
   else:
-    new_t = graft.operand(op2.tgt_root(), PATTERN)
+    new_t = graft.operand(op2.tgt_root(), Pattern)
 
   # make sure target root has same name as source root
   rname = new_s.getName()
