@@ -42,44 +42,46 @@ BoolPred.visit = base_visit
 
 
 class _DependencyFinder(Visitor):
-  def __init__(self, exclude = None):
+  def __init__(self, exclude = None, tag = None):
     self.uses = {}
     self.exclude = exclude or set()
+    self.tag = tag or (lambda n: n)
 
   def default(self, v):
     return set()
 
   def __call__(self, v):
-    if v in self.exclude:
+    k = self.tag(v)
+    if k in self.exclude:
       return set()
 
-    if v in self.uses:
-      return self.uses[v]
+    if k in self.uses:
+      return self.uses[k]
 
     r = v.visit(self)
-    self.uses[v] = r
+    self.uses[k] = r
     return r
 
   def visit_BinOp(self, v):
-    return set.union(self(v.v1), self(v.v2), [v.v1, v.v2])
+    return set.union(self(v.v1), self(v.v2), map(self.tag, [v.v1, v.v2]))
 
   def visit_ConversionOp(self, v):
-    return set.union(self(v.v), [v.v])
+    return set.union(self(v.v), [self.tag(v.v)])
 
   def visit_Icmp(self, v):
-    return set.union(self(v.v1), self(v.v2), [v.v1, v.v2])
+    return set.union(self(v.v1), self(v.v2), map(self.tag, [v.v1, v.v2]))
 
   def visit_Select(self, v):
-    return set.union(self(v.c), self(v.v1), self(v.v2), [v.c, v.v1, v.v2])
+    return set.union(self(v.c), self(v.v1), self(v.v2), map(self.tag, [v.c, v.v1, v.v2]))
 
   def visit_CnstUnaryOp(self, v):
-    return set.union(self(v.v), [v.v])
+    return set.union(self(v.v), [self.tag(v.v)])
 
   def visit_CnstBinaryOp(self, v):
-    return set.union(self(v.v1), self(v.v2), [v.v1, v.v2])
+    return set.union(self(v.v1), self(v.v2), map(self.tag, [v.v1, v.v2]))
 
   def visit_CnstFunction(self, v):
-    return set.union(set(v.args), *(self(a) for a in v.args))
+    return set.union(set(self.tag(a) for a in v.args), *(self(a) for a in v.args))
 
   def visit_PredNot(self, t):
     return self(t.v)
@@ -96,12 +98,12 @@ class _DependencyFinder(Visitor):
   def visit_LLVMBoolPred(self, t):
     return set.union(*(self(a) for a in t.args))
 
-def all_uses(value):
+def all_uses(value, tag=None):
   '''
   Recursively walk value and its dependencies. Return a map from values to
   sets of subvalues.
   '''
-  find = _DependencyFinder()
+  find = _DependencyFinder(tag=tag)
   find(value)
   return find.uses
 
@@ -797,7 +799,7 @@ class Grafter(CopyBase):
 
 # --
 
-def _cycle_check(subsets, code_uses, pat_uses, sorted, parents):
+def _cycle_check(subsets, dependencies, sorted, parents):
   '''
   Used by compose to find cycles. Basic DFS, except the arcs are 
   determined by uses and eqs.
@@ -816,15 +818,8 @@ def _cycle_check(subsets, code_uses, pat_uses, sorted, parents):
 
     done[rep] = False
     vals = subsets.subset(rep)
-    pvals = tuple(k.val for k in vals if isinstance(k, Pattern))
-    cvals = tuple(k.val for k in vals if isinstance(k, Code))
-
-    log.debug('pvals: %s', pvals)
-    log.debug('cvals: %s', cvals)
-
-    puses = imap(Pattern, chain.from_iterable(pat_uses[p] for p in pvals))
-    cuses = imap(Code, chain.from_iterable(code_uses[p] for p in cvals))
-    uses = set(subsets.rep(k) for k in chain(puses,cuses) if k in subsets)
+    uses = set(subsets.rep(d) for v in vals for d in dependencies[v]
+                if d in subsets)
 
     for k in uses:
       parents[k].add(rep)
@@ -913,6 +908,7 @@ def _postunify_patterns(subsets):
 
   # the previous step may have unified some subsets containing pinstrs,
   # so unify their representatives
+  # FIXME: the previous step may have created some subsets containing instrs
   did_something = True
   while did_something:
     did_something = False
@@ -931,6 +927,9 @@ def _postunify_patterns(subsets):
           rep_pinstrs[rep2] = Pattern(unify(pinstr2.val, pinstr.val))
         else:
           rep_pinstrs[rep2] = pinstr
+
+        if rep2 not in rep_cinstr:
+          log.warning('indirectly matched %s and %s', rep, rep2)
 
         del rep_pinstrs[rep]
         if rep in rep_cinstr:
@@ -983,24 +982,26 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   # ------------------------------
 
   # cycle check
-  code_uses = all_uses(code)
-  pat_uses = all_uses(pat)
-  extended_pat_uses = _DependencyFinder(set.union(pat_uses[pat], [pat]))(op2.src_root())
+  dependencies = all_uses(code, tag=Code)
+  dependencies.update(all_uses(pat, tag=Pattern))
+  extended_pat_uses = _DependencyFinder(
+    exclude=set.union(dependencies[Pattern(pat)], [Pattern(pat)]),
+    tag=Pattern)(op2.src_root())
+
   if log.isEnabledFor(logging.DEBUG):
-    log.debug('\ncode_uses:\n' + pformat(code_uses, indent=2)
-      + '\npat_uses:\n' + pformat(pat_uses, indent=2)
+    log.debug('\ndependencies:\n' + pformat(dependencies, indent=2)
       + '\nextended_pat-uses:\n' + pformat(extended_pat_uses, indent=2))
 
   # these values occur in op1.tgt only
-  intermediates = {Code(v) for v in code_uses[code]
-    if isinstance(v, Instr) and v.getName() not in op1.tgt_skip}
+  intermediates = {v for v in dependencies[Code(code)]
+    if isinstance(v.val, Instr) and v.val.getName() not in op1.tgt_skip}
 
   log.debug('intermediates %s', intermediates)
 
   toposort = []
   direct_users = collections.defaultdict(set)
 
-  if _cycle_check(subs, code_uses, pat_uses, toposort, direct_users):
+  if _cycle_check(subs, dependencies, toposort, direct_users):
     log.info('reject: unifications form a cycle')
     return None
 
@@ -1021,12 +1022,14 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     pvals = set(k.val for k in vals if isinstance(k, Pattern))
     cvals = set(k.val for k in vals if isinstance(k, Code))
 
-    cinstr = tuple(v for v in cvals if isinstance(v, Instr))
+    cinstr = tuple(k for k in vals
+                    if isinstance(k, Code) and isinstance(k.val, Instr))
     if len(cinstr) > 1:
       log.info('reject: unified distinct code instrs\n%s', cinstr)
       return None
 
-    pinstr = tuple(v for v in pvals if isinstance(v, Instr))
+    pinstr = tuple(k for k in vals
+                    if isinstance(k, Pattern) and isinstance(k.val, Instr))
     if len(cinstr) + len(pinstr) > 1:
       assert rep in rep_replace
 
@@ -1039,10 +1042,15 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     # find the replacement
     if cinstr:
       cinstr = cinstr[0]
-      rep_replace[rep] = Code(cinstr)
+      if rep in rep_replace:
+        #log.warning('Changing replacement for %s to %s from %s', rep, cinstr, rep_replace[rep])
+        assert isinstance(rep_replace[rep], Pattern)
+        assert Matcher(subsets.DisjointSubsets())(rep_replace[rep].val, cinstr.val)
+
+      rep_replace[rep] = cinstr
 
       # check whether this instruction is an intermediate value
-      if Code(cinstr) in intermediates:
+      if cinstr in intermediates:
         log.debug('%s in intermediates', cinstr)
         if any(isinstance(v, Input) for v in cvals):
           log.info('reject: intermediate value matched with code input')
@@ -1051,21 +1059,21 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       # check whether this instruction unified with a code input
       # or an extended pattern input
       if not any(isinstance(v, Input) for v in cvals) and \
-          pvals.isdisjoint(extended_pat_uses):
+          vals.isdisjoint(extended_pat_uses):
         log.debug('subset does not include code inputs or intersect extended pattern.')
         continue
 
       # check whether this instruction uses any cexprs
-      cexprs = tuple(v for v in code_uses[cinstr]
-                      if Code(v) not in subs and isinstance(v, Constant)
-                        and not isinstance(v, ConstantVal))
+      cexprs = tuple(k for k in dependencies[cinstr]
+                      if k not in subs and isinstance(k.val, Constant)
+                        and not isinstance(k.val, ConstantVal))
 
       if not cexprs:
         continue
 
       log.debug('code instruction %s uses cexprs %s', cinstr, cexprs)
 
-      sub_cexprs = set.union(*(code_uses[e] for e in cexprs))
+      sub_cexprs = set(k for e in cexprs for k in dependencies[e])
 
       log.debug('sub_cexprs %s', sub_cexprs)
 
@@ -1074,17 +1082,17 @@ def compose(op1, op2, code_at = None, pattern_at = None):
 
         log.info('new constant for %s', cexpr)
         new_c = Code(Input('C0', IntType()))
-        replace[Code(cexpr)] = new_c
-        pre3.append((new_c, Code(cexpr)))
+        replace[cexpr] = new_c
+        pre3.append((new_c, cexpr))
 
     elif pinstr:
-      rep_replace[rep] = Pattern(pinstr[0])
+      assert rep in rep_replace
 
-      # check whether this instructions dependencies unified with an intermediate value
-      for pval in pat_uses[pinstr[0]]:
+      # check whether this instruction's dependencies unified with an intermediate value
+      for pval in dependencies[pinstr[0]]:
         log.debug('%s uses %s', pinstr[0], pval)
-        if Pattern(pval) in subs:
-          if any(c in intermediates for c in subs.subset(Pattern(pval))):
+        if pval in subs:
+          if any(c in intermediates for c in subs.subset(pval)):
             log.info('reject: pattern instruction depends on intermediate value')
             return None
 
@@ -1113,7 +1121,7 @@ def compose(op1, op2, code_at = None, pattern_at = None):
       if cexprs:
         if any(isinstance(k, Pattern) and isinstance(k.val, Instr) for k in
                 (rep_replace[r] for r in users.get(rep, ()))) or \
-            not pvals.isdisjoint(extended_pat_uses) or \
+            not vals.isdisjoint(extended_pat_uses) or \
             any(isinstance(v, Input) for v in cvals):
           log.debug('Used by a pattern instruction, extended pattern, or code input')
           new_c = Code(Input('C0', IntType()))
@@ -1157,11 +1165,11 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     root_uses = extended_pat_uses
     log.debug('root uses %s', root_uses)
 
-    if any(replace.get(Pattern(v), ()) in intermediates for v in root_uses):
+    if any(replace.get(v, ()) in intermediates for v in root_uses):
       log.info('reject: Extended pattern requires intermediate value.')
       if log.isEnabledFor(logging.DEBUG):
-        x = tuple((v, replace[Pattern(v)]) for v in root_uses
-                    if replace.get(Pattern(v), ()) in intermediates)
+        x = tuple((v, replace[v]) for v in root_uses
+                    if replace.get(v, ()) in intermediates)
         log.debug('Culprit: ' + pformat(x))
       return None
 
