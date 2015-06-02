@@ -38,7 +38,7 @@ class DisjointSubsets(object):
       return
     
     self._parent[key] = None
-    self._subset[key] = set([key])
+    self._subset[key] = frozenset([key])
 
   def rep(self, key):
     if key not in self._parent:
@@ -63,7 +63,7 @@ class DisjointSubsets(object):
     self._parent[rep2] = rep1
     subset1 = self._subset[rep1]
     subset2 = self._subset.pop(rep2)
-    subset1.update(subset2)
+    self._subset[rep1] = subset1.union(subset2)
 
   def unified(self, key1, key2):
     return self.rep(key1) == self.rep(key2)
