@@ -343,7 +343,7 @@ class Printer(Visitor):
     return "true"
 
   def visit_PredNot(self, t):
-    return '!' + t.visit(self)
+    return '!' + t.v.visit(self)
 
   def visit_PredAnd(self, t):
     return '(' + ' && '.join(s.visit(self) for s in t.args) + ')'
