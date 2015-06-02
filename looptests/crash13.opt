@@ -1,0 +1,15 @@
+; expect 0 loops
+
+Name: (canonicalize mul nuw;265-2)
+Pre: true
+  %div = sdiv exact %X, C
+  %x = mul nuw C, %div
+=>
+  %x = %X
+
+Name: (canonicalize mul nuw;265-2)
+Pre: true
+  %div = sdiv exact %X, C
+  %x = mul nuw C, %div
+=>
+  %x = %X

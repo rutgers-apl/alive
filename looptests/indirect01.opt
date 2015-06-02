@@ -1,0 +1,18 @@
+; expect 0 compositions
+Name: 1
+%b0 = sub 0, %2
+%0 = zext %b0
+%p = select %0, %1, %1
+%r = select %p, %X, %X
+=>
+%r = select %p, %X, %X
+
+Name: 2
+%b = xor %x, -1
+%3 = zext %b
+%p = select %2, %2, %3
+%A = add %p, %b
+%B = add %c, %d
+%r = select %c, %A, %B
+=>
+%r = select %c, %A, %B
