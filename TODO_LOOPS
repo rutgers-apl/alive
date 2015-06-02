@@ -3,6 +3,7 @@ Errors:
 - consider types when matching and unifying
 - crash5.opt gets an assertion error
 	width() mentioning intermediate values
+- should honor hasOneUse (is this possible in general?)
 
 Enhancements:
 - handle general icmp matching

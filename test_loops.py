@@ -96,8 +96,10 @@ def test_loop(opts, name='anon', verify=False, quiet=False, on_error=None):
         continue
 
       if loops.satisfiable(oo):
-        logger.info('loop:%s\n%s\n', o, oo)
+        logger.info('loop:\n%s\n%s\n', o, oo)
         return True
+      else:
+        logger.info('%s unsatisfiable', o.name)
 
     return False
 
@@ -196,13 +198,13 @@ def main():
   if args.log:
     for tree,level in args.log:
       level = level.upper()
-      try:
-        logging.getLogger(tree).setLevel(getattr(logging, level))
-        logger.info('logging %s at %s', tree, level)
-      except AttributeError:
+      if level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
         sys.stderr.write('{} is not a valid logging level\n'.format(level))
         sys.stderr.write('Use: DEBUG, INFO, WARNING, ERROR, CRITICAL\n')
         exit(-1)
+
+      logging.getLogger(tree).setLevel(getattr(logging, level))
+      logger.info('logging %s at %s', tree, level)
 
   for f in itertools.chain.from_iterable(args.compose):
     opts = loops.parse_transforms(f.read())
