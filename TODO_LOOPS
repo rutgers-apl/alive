@@ -1,6 +1,8 @@
 Errors:
 - take union of flags when doing matching (no, the current version is correct)
 - consider types when matching and unifying
+- crash5.opt gets an assertion error
+	width() mentioning intermediate values
 
 Enhancements:
 - handle general icmp matching
@@ -12,6 +14,6 @@ Enhancements:
 - Prof: header?
 
 Possible:
-- simplify EquivalenceClass into DisjointSubsets
-- break compose() into smaller pieces
+- DONE simplify EquivalenceClass into DisjointSubsets
+- DONE break compose() into smaller pieces
 - rework Type to make finding subtype and lub easier
