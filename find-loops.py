@@ -10,7 +10,7 @@ def search(opts, n, on_error=None):
     return
 
   for (o1,i1,oz) in search(opts, n-1, on_error):
-    for i2 in range(1, len(opts)):
+    for i2 in range(0, len(opts)):
       o2 = opts[i2]
       os = oz + (o2,)
       for c in loops.all_bin_compositions(o1, o2, on_error):
