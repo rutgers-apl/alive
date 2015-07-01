@@ -44,7 +44,7 @@ BoolPred.visit = base_visit
 class _DependencyFinder(Visitor):
   def __init__(self, exclude = None, tag = None):
     self.uses = {}
-    self.exclude = exclude or set()
+    self.exclude = exclude or frozenset()
     self.tag = tag or (lambda n: n)
 
   def default(self, v):
@@ -929,7 +929,7 @@ def _cycle_check(subsets, dependencies, sorted, parents):
 
     done[rep] = False
     vals = subsets.subset(rep)
-    uses = set(subsets.rep(d) for v in vals for d in dependencies[v]
+    uses = frozenset(subsets.rep(d) for v in vals for d in dependencies[v]
                 if d in subsets)
 
     for k in uses:
@@ -1117,7 +1117,6 @@ def compose(op1, op2, code_at = None, pattern_at = None):
   # ------------------------------
 
   pre3 = []
-  replace = {}
   starters = set() # reps present in the initial code
 
   # test each subset after any subsets which use it
@@ -1143,8 +1142,9 @@ def compose(op1, op2, code_at = None, pattern_at = None):
     log.debug('  rep_replace[%s] = %s', rep, rep_replace[rep])
 
   # replace everything with the rep's replacement
+  replace = {}
   for key,rep in subs.key_reps():
-    if key not in replace and key != rep_replace[rep]:
+    if key != rep_replace[rep]:
       replace[key] = rep_replace[rep]
 
   if log.isEnabledFor(logging.DEBUG):
@@ -1238,11 +1238,11 @@ def get_ancestors(parents):
     if node in ancestors:
       return
 
-    direct = parents.get(node, set())
-    ancestors[node] = set(direct)
+    direct = parents.get(node, frozenset())
+    ancestors[node] = frozenset(direct)
     for p in direct:
       walk(p)
-      ancestors[node].update(ancestors[p])
+      ancestors[node] = ancestors[node].union(ancestors[p])
 
   for node in parents:
     walk(node)
