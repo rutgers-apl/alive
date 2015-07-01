@@ -592,7 +592,7 @@ class PatternMatchBase(Visitor):
   logger = logger.getChild('PatternMatchBase')
 
   def __call__(self, pattern, code):
-    logger.info('Matching (%s) (%s)', pattern, code)
+    self.logger.info('Matching (%s) (%s)', pattern, code)
 
     if isinstance(pattern, Input) or isinstance(code, Input):
       return
@@ -661,7 +661,7 @@ class PatternMergeBase(Visitor):
   logger = logger.getChild('PatternMergeBase')
 
   def __call__(self, pat1, pat2):
-    logger.info('merging |%s| |%s|', pat1, pat2)
+    self.logger.info('merging |%s| |%s|', pat1, pat2)
 
     if isinstance(pat2, Input):
       return pat1
@@ -695,7 +695,7 @@ class PatternMergeBase(Visitor):
       raise NoMatch
 
     v = self.subtree(pat1.v, pat2.v)
-    logger.warning('unifying <%s> and <%s> without checking types',
+    self.logger.warning('unifying <%s> and <%s> without checking types',
                       pat1.v, pat2.v)
 
     if v is pat1.v:
@@ -706,11 +706,11 @@ class PatternMergeBase(Visitor):
     return pat
 
   def visit_Icmp(self, pat1, pat2):
+    if pat1.op == Icmp.Var or pat2.op == Icmp.Var:
+      raise AliveError('PatternUnifier: general icmp unifying unsupported')
+
     if pat1.op != pat2.op:
       raise NoMatch
-
-    if pat1.op == Icmp.Var:
-      raise AliveError('PatternUnifier: general icmp unifying unsupported')
 
     v1 = self.subtree(pat1.v1, pat2.v1)
     v2 = self.subtree(pat1.v2, pat2.v2)
@@ -718,7 +718,8 @@ class PatternMergeBase(Visitor):
     if v1 == pat1.v1 and v2 == pat2.v2:
       return pat1
 
-    pat = Icmp(pat1.op, copy_type(pat1.stype), v1, v2)
+    op = Icmp.opnames[pat1.op]
+    pat = Icmp(op, copy_type(pat1.stype), v1, v2)
     pat.setName(pat1.getName())
     return pat
 
