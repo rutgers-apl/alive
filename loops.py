@@ -1354,14 +1354,19 @@ def all_bin_compositions(o1, o2, on_error=None):
       logger.exception('all_bin_compositions %r\n;\n%s\n;@%s\n%s', e, o1, r, o2)
 
 
-def all_compositions(opts):
-  for o1 in opts:
-    for o2 in opts:
-      # make sure we don't compose the same thing
-      if o1 is o2: o2 = o1.copy()
-      
-      for o12 in all_bin_compositions(o1,o2):
-        yield o12
+def all_compositions(opts, up_to = None):
+  '''Find all compositions of a sequence of optimizations'''
+  logger.info('all_compositions len=%s up_to=%s', len(opts), up_to)
+  if up_to is None:
+    up_to = len(opts)
+
+  if 1 < up_to <= len(opts):
+    o2 = opts[up_to - 1]
+    for o1 in all_compositions(opts, up_to - 1):
+        for c in all_bin_compositions(o1,o2):
+          yield c
+  elif up_to == 1 and opts:
+    yield opts[0]
 
 
 def check_self_loop(opt):
