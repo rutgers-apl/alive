@@ -1,8 +1,57 @@
 #!/usr/bin/env python
 import loops
-import argparse, logging, itertools, sys, os, json
+import argparse, itertools, sys, os, json
 import gc
-import logging.config
+import logging, logging.config
+import logutils.queue, Queue
+import threading, multiprocessing
+
+logger = logging.getLogger(__name__)
+
+def prefixes(length, max):
+  'Generate tuples of given length corresponding to unique prefixes of cycles'
+
+  if length < 1:
+    return
+
+  def _prefixes_after(length, max, min, prev):
+    if length < 1:
+      yield prev
+      return
+
+    for i in range(min,max):
+      if i in prev:
+        continue
+      prev2 = prev + (i,)
+      for p in _prefixes_after(length-1, max, min, prev2):
+        yield p
+
+  for i in range(0, max - length + 1):
+    for p in _prefixes_after(length-1, max, i+1, (i,)):
+      yield p
+
+def prefix_generator(length, max, procs, prefix_queue, finished):
+  'Thread worker which generates prefixes and sends them to a queue'
+  
+  log = logger.getChild('prefix_generator')
+  log.debug('Prefix generator started')
+  
+  for p in prefixes(length, max):
+    log.debug('Generated %s', p)
+    prefix_queue.put(p)
+  
+  log.debug('Prefixes generated')
+  prefix_queue.join() # wait until all the prefixes have been handled
+  
+  log.debug('Prefixes handled')
+  finished.set() # tell main thread to stop spawning workers
+  
+  # terminate workers
+  for i in range(procs):
+    prefix_queue.put(None)
+  
+  log.debug('Generator complete')
+
 
 def _search_after(opts, n, i, o, oz, on_error=None):
   if n < 1:
@@ -50,7 +99,181 @@ status = '\rTested: {} SatChecks: {} Loops: {}'
 def count_src(o):
   return sum(1 for v in o.src.itervalues() if isinstance(v, loops.Instr))
 
+COUNT, SAT_CHECKS, CYCLES, ERRORS = range(4)
+MAX_TESTS = 50000
+
+def search_process(suite, length, prefix_queue, result_queue, log_config):
+  logging.config.dictConfig(log_config)
+  log = logger.getChild('search_process')
+  log.info('Worker thread started')
+  opts = loops.parse_transforms(open(suite).read())
+
+  log.debug('%s optimizations', len(opts))
+
+  info = [0,0,0,0]
+  
+  def count_error(e,o1,o2):
+    info[ERRORS] += 1
+  
+  while info[COUNT] < MAX_TESTS:
+    p = prefix_queue.get()
+    if p is None:
+      prefix_queue.task_done()
+      break
+    
+    log.debug('Checking prefix %s', p)
+    
+    for o,os in search_after_prefix(opts, length, p, count_error):
+      o_src = count_src(o)
+      
+      for oo in loops.all_bin_compositions(o, o, count_error):
+        if info[COUNT] % 1000 == 0:
+          log.info('Tested %s SatChecks %s Loops %s Errors %s', *info)
+  
+        info[COUNT] += 1
+        
+        oo_src = count_src(oo)
+        
+        if o_src < oo_src:
+          continue
+        
+        info[SAT_CHECKS] += 1
+        if not loops.satisfiable(oo):
+          continue
+        
+        info[CYCLES] += 1
+
+        # TODO: put found loops into a queue
+        log.info('Found loop: %s\n%s\n%s', oo.name, '\n'.join(str(op) for op in os), oo)
+    
+    prefix_queue.task_done()
+
+  log.info('Worker exiting')
+  result_queue.put(info)
+  
+  
+def search_manager(suite, prefix_length, length, max, log_config):
+  log = logger.getChild('search_manager')
+  log.info('Starting manager')
+  
+  prefix_queue = multiprocessing.JoinableQueue()
+  result_queue = multiprocessing.Queue()
+  finished = threading.Event()
+  procs = 1
+  
+  prefix_thread = threading.Thread(
+    target=prefix_generator,
+    args=(prefix_length, max, procs, prefix_queue, finished))
+  prefix_thread.start()
+  
+  for i in range(procs):
+    p = multiprocessing.Process(
+      target=search_process,
+      args=(suite, length, prefix_queue, result_queue, log_config))
+    p.start()
+  
+  total_info = [0,0,0,0]
+  
+  # read from the result queue until the prefix generator completes
+  while True:
+    r = result_queue.get(block=True)
+    log.debug('Got result %s', r)
+    
+    for i in range(4):
+      total_info[i] += r[i]
+    
+    log.info('Current totals %s', total_info)
+    
+    if finished.is_set():
+      break
+    else:
+      p = multiprocessing.Process(
+        target=search_process,
+        args=(suite, length, prefix_queue, result_queue, log_config))
+      p.start()
+
+  # wait until all the sentinels have been received
+  prefix_queue.join()
+  
+  # drain the leftovers
+  while True:
+    try:
+      r = result_queue.get(block=False)
+      log.debug('Got result %s', r)
+      
+      for i in range(4):
+        total_info[i] += r[i]
+      
+      log.info('Current totals %s', total_info)
+    except Queue.Empty:
+      break
+  
+  log.info('Final: Candidates %s Sat_Checks %s Cycles %s Errors %s', *total_info)
+
+def count_opts(suite):
+  opts = loops.parse_transforms(open(suite).read())
+  return len(opts)
+
 def main():
+  log_queue = multiprocessing.Queue()
+  log_config = {
+    'version': 1,
+    'disable_existing_handlers': True,
+    'handlers': {
+      'queue': {
+        'class': 'logutils.queue.QueueHandler',
+        'queue': log_queue
+      }
+    },
+    'loggers': {
+      __name__: { 'level': 'DEBUG' }
+    },
+    'root': {
+      'level': 'WARNING',
+      'handlers': ['queue']
+    }
+  }
+
+  h = logging.FileHandler(filename='find-simple-loops.log', mode='w')
+  #h = logging.StreamHandler()
+  f = logging.Formatter('%(asctime)s - %(levelname)-8s - %(name)s - %(message)s')
+  h.setFormatter(f)
+  ql = logutils.queue.QueueListener(log_queue, h)
+  ql.start()
+  logging.config.dictConfig(log_config)
+  
+  parser = argparse.ArgumentParser()
+  parser.add_argument('prefix_length', type=int,
+    help='Length of prefix to spawn into worker processes')
+  parser.add_argument('suffix_length', type=int,
+    help='Length of cycles following the prefix')
+  parser.add_argument('file', type=str,
+    help='optimization suite to analyze')
+  
+  args = parser.parse_args()
+  
+  
+  # FIXME: Need to make sure zero-length prefixes work
+  if args.prefix_length < 1 or args.suffix_length < 1:
+    sys.stderr.write('cycle length must be positive\n')
+    exit(1)
+  
+  if not os.path.exists(args.file):
+    sys.stderr.write(args.file + ': not found\n')
+    exit(1)
+  
+  logger.info('Starting')
+  
+  max = count_opts(args.file)
+  
+  logger.info('Counted %s opts', max)
+  #exit(0)
+  
+  search_manager(args.file, args.prefix_length, args.suffix_length, max, log_config)
+  
+  ql.stop()
+
+def old_main():
   logging.basicConfig(filename='find-simple-loops.log', #filemode='w',
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
   logger = logging.getLogger('find-simple-loops')
