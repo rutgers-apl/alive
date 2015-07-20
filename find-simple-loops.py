@@ -121,7 +121,7 @@ def search_process(suite, length, prefix_queue, result_queue, log_config):
       prefix_queue.task_done()
       break
     
-    log.debug('Checking prefix %s', p)
+    log.info('Checking prefix %s', p)
     
     for o,os in search_after_prefix(opts, length, p, count_error):
       o_src = count_src(o)
@@ -144,7 +144,7 @@ def search_process(suite, length, prefix_queue, result_queue, log_config):
         info[CYCLES] += 1
 
         # TODO: put found loops into a queue
-        log.info('Found loop: %s\n%s\n%s', oo.name, '\n'.join(str(op) for op in os), oo)
+        log.info('Found loop: %s\n%s\n%s', o.name, '\n'.join(str(op) for op in os), o)
     
     prefix_queue.task_done()
 
@@ -226,7 +226,7 @@ def main():
       }
     },
     'loggers': {
-      __name__: { 'level': 'DEBUG' }
+      __name__: { 'level': 'INFO' }
     },
     'root': {
       'level': 'WARNING',
