@@ -102,7 +102,7 @@ def count_src(o):
 COUNT, SAT_CHECKS, CYCLES, ERRORS = range(4)
 MAX_TESTS = 50000
 
-def search_process(suite, length, prefix_queue, result_queue, log_config):
+def search_process(suite, length, prefix_queue, result_queue, status_queue, log_config):
   logging.config.dictConfig(log_config)
   log = logger.getChild('search_process')
   log.info('Worker thread started')
@@ -144,19 +144,33 @@ def search_process(suite, length, prefix_queue, result_queue, log_config):
         info[CYCLES] += 1
 
         # TODO: put found loops into a queue
-        log.info('Found loop: %s\n%s\n%s', o.name, '\n'.join(str(op) for op in os), o)
-    
+        result = 'Loop: {}\n{}\n\n{}'.format(o.name, '\n\n'.join(str(op) for op in os), o)
+        result_queue.put(result)
+        log.info(result)
+
     prefix_queue.task_done()
 
   log.info('Worker exiting')
-  result_queue.put(info)
+  status_queue.put(info)
   
-  
+
+def queue_printer(result_queue):
+  'Read strings from the queue. Terminate when we get None'
+  while True:
+    result = result_queue.get()
+    if result is None:
+      return
+
+    print '\n-----'
+    print result
+
+# TODO: track child processes so we can handle exceptions gracefully
 def search_manager(suite, prefix_length, length, max, log_config):
   log = logger.getChild('search_manager')
   log.info('Starting manager')
   
   prefix_queue = multiprocessing.JoinableQueue()
+  status_queue = multiprocessing.Queue()
   result_queue = multiprocessing.Queue()
   finished = threading.Event()
   procs = 1
@@ -164,51 +178,60 @@ def search_manager(suite, prefix_length, length, max, log_config):
   prefix_thread = threading.Thread(
     target=prefix_generator,
     args=(prefix_length, max, procs, prefix_queue, finished))
-  prefix_thread.start()
+  prefix_thread.daemon = True # no cleanup needed if we get a KeyboardInterrupt
+
+  result_thread = threading.Thread(
+    target=queue_printer,
+    args=(result_queue,))
   
   for i in range(procs):
     p = multiprocessing.Process(
       target=search_process,
-      args=(suite, length, prefix_queue, result_queue, log_config))
+      args=(suite, length, prefix_queue, result_queue, status_queue, log_config))
     p.start()
   
   total_info = [0,0,0,0]
-  
-  # read from the result queue until the prefix generator completes
-  while True:
-    r = result_queue.get(block=True)
-    log.debug('Got result %s', r)
-    
-    for i in range(4):
-      total_info[i] += r[i]
-    
-    log.info('Current totals %s', total_info)
-    
-    if finished.is_set():
-      break
-    else:
-      p = multiprocessing.Process(
-        target=search_process,
-        args=(suite, length, prefix_queue, result_queue, log_config))
-      p.start()
-
-  # wait until all the sentinels have been received
-  prefix_queue.join()
-  
-  # drain the leftovers
-  while True:
-    try:
-      r = result_queue.get(block=False)
+  try:
+    prefix_thread.start()
+    result_thread.start()
+    # read from the result queue until the prefix generator completes
+    while True:
+      r = status_queue.get(block=True)
       log.debug('Got result %s', r)
-      
+
       for i in range(4):
         total_info[i] += r[i]
-      
+
       log.info('Current totals %s', total_info)
-    except Queue.Empty:
-      break
-  
-  log.info('Final: Candidates %s Sat_Checks %s Cycles %s Errors %s', *total_info)
+
+      if finished.is_set():
+        break
+      else:
+        p = multiprocessing.Process(
+          target=search_process,
+          args=(suite, length, prefix_queue, status_queue, log_config))
+        p.start()
+
+    # wait until all the sentinels have been received
+    prefix_queue.join()
+
+    # drain the leftovers
+    while True:
+      try:
+        r = status_queue.get(block=False)
+        log.debug('Got result %s', r)
+
+        for i in range(4):
+          total_info[i] += r[i]
+
+        log.info('Current totals %s', total_info)
+      except Queue.Empty:
+        break
+
+    log.info('Final: Candidates %s Sat_Checks %s Cycles %s Errors %s', *total_info)
+  finally:
+    log.debug('Closing result queue reader')
+    result_queue.put(None)
 
 def count_opts(suite):
   opts = loops.parse_transforms(open(suite).read())
@@ -269,9 +292,11 @@ def main():
   logger.info('Counted %s opts', max)
   #exit(0)
   
-  search_manager(args.file, args.prefix_length, args.suffix_length, max, log_config)
-  
-  ql.stop()
+  try:
+    search_manager(args.file, args.prefix_length, args.suffix_length, max, log_config)
+  finally:
+    logger.debug('Closing queue listener')
+    ql.stop()
 
 def old_main():
   logging.basicConfig(filename='find-simple-loops.log', #filemode='w',
