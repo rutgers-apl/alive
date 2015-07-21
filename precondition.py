@@ -206,12 +206,16 @@ class BinaryBoolPred(BoolPred):
 
 ################################
 class LLVMBoolPred(BoolPred):
-  eqptrs, isPower2, isPower2OrZ, isShiftedMask, isSignBit, maskZero,\
-  NSWAdd, NUWAdd, NSWSub, NUWSub, NSWMul, NUWMul, NUWShl, OneUse,\
-  Last = range(15)
+  eqptrs, hasNSW, hasNUW, isConstant, isExact, isPower2, isPower2OrZ,\
+  isShiftedMask, isSignBit, maskZero, NSWAdd, NUWAdd, NSWSub, NUWSub, NSWMul,\
+  NUWMul, NUWShl, OneUse, Last = range(19)
 
   opnames = {
     eqptrs:      'equivalentAddressValues',
+    hasNSW:      'hasNSW',
+    hasNUW:      'hasNUW',
+    isConstant:  'isConstant',
+    isExact:     'isExact',
     isPower2:    'isPowerOf2',
     isPower2OrZ: 'isPowerOf2OrZero',
     isShiftedMask: 'isShiftedMask',
@@ -230,6 +234,10 @@ class LLVMBoolPred(BoolPred):
 
   num_args = {
     eqptrs:      2,
+    hasNSW:      1,
+    hasNUW:      1,
+    isConstant:  1,
+    isExact:     1,
     isPower2:    1,
     isPower2OrZ: 1,
     isShiftedMask: 1,
@@ -271,6 +279,10 @@ class LLVMBoolPred(BoolPred):
 
   arg_types = {
     eqptrs:      ['var', 'var'],
+    hasNSW:      ['var'], # TODO: restrict these to non-Inputs?
+    hasNUW:      ['var'],
+    isConstant:  ['any'], # broad because it may be negated
+    isExact:     ['var'],
     isPower2:    ['any'],
     isPower2OrZ: ['any'],
     isShiftedMask: ['const'],
@@ -305,6 +317,11 @@ class LLVMBoolPred(BoolPred):
 
   argConstraints = {
     eqptrs:      lambda a,b: allTyEqual([a,b], Type.Ptr),
+    hasNSW:      lambda a: allTyEqual([a], Type.Int),
+    hasNUW:      lambda a: allTyEqual([a], Type.Int),
+    isConstant:  lambda a: allTyEqual([a], Type.Int),
+      # TODO: does this make sense for non-Int types?
+    isExact:     lambda a: allTyEqual([a], Type.Int),
     isPower2:    lambda a: allTyEqual([a], Type.Int),
     isPower2OrZ: lambda a: allTyEqual([a], Type.Int),
     isShiftedMask: lambda a: allTyEqual([a], Type.Int),
@@ -341,6 +358,17 @@ class LLVMBoolPred(BoolPred):
 
     return {
       self.eqptrs:      lambda a,b: self._mkMayAnalysis(d, [a,b], a == b),
+      self.hasNSW:      lambda a: (d,
+                          [get_hasflag_var(self.args[0].getUniqueName(), 'nsw')
+                            == 1]),
+      self.hasNUW:      lambda a: (d,
+                          [get_hasflag_var(self.args[0].getUniqueName(), 'nuw')
+                            == 1]),
+      self.isConstant:  lambda a: (d, 
+                          [get_isconst_var(self.args[0].getUniqueName()) == 1]),
+      self.isExact:     lambda a: (d,
+                          [get_hasflag_var(self.args[0].getUniqueName(), 
+                            'exact') == 1]),
       self.isPower2:    lambda a: self._mkMayAnalysis(d, [a],
                           And(a != 0, a & (a-1) == 0)),
       self.isPower2OrZ: lambda a: self._mkMayAnalysis(d, [a], a & (a-1) == 0),
@@ -405,5 +433,18 @@ class LLVMBoolPred(BoolPred):
         LLVMBoolPred.NUWSub}:
       return CFunctionCall(self.opnames[self.op], args[0], args[1], CVariable('I'))
       # TODO: obtain root from manager?
+
+    if self.op == LLVMBoolPred.hasNUW:
+      return args[0].arr('hasNoUnsignedWrap', []) #TODO: make sure this compiles
+
+    if self.op == LLVMBoolPred.hasNSW:
+      return args[0].arr('hasNoSignedWrap', [])
+    
+    if self.op == LLVMBoolPred.isConstant:
+      return CFunctionCall('isa<ConstantInt>', args[0])
+      # NOTE: Generalize to isa<Constant>?
+
+    if self.op == LLVMBoolPred.isExact:
+      return args[0].arr('isExact', [])
 
     return CFunctionCall(self.opnames[self.op], *args)

@@ -1269,12 +1269,72 @@ def mk_conjoin(ps):
   return PredAnd(*ps)
 
 
+class PreconditionChecker(Visitor):
+  def visit_TruePred(self, term, model):
+    return True
+
+  def visit_PredNot(self, term, model):
+    return not term.v.visit(self, model)
+
+  def visit_PredAnd(self, term, model):
+    return all(a.visit(self, model) for a in term.args)
+
+  def visit_PredOr(self, term, model):
+    return any(a.visit(self, model) for a in term.args)
+
+  def visit_BinaryBoolPred(self, term, model):
+    return True
+
+  def visit_LLVMBoolPred(self, term, model):
+    if term.op == LLVMBoolPred.isConstant:
+      arg = term.args[0]
+      # TODO: consider edge cases where Z3 might pick wrong
+      # e.g., isConstant(%a) || !isConstant(%a)
+      isConst = model[get_isconst_var(arg.getUniqueName())]
+      return bool(isConst) == isConstExpr(arg)
+
+    if term.op == LLVMBoolPred.isExact:
+      arg = term.args[0]
+      if not (isinstance(arg, BinOp) and arg.op in 
+          {BinOp.UDiv, BinOp.SDiv, BinOp.AShr, BinOp.LShr}):
+        return False
+
+      if model[get_hasflag_var(arg.getName(), 'exact')]:
+        return 'exact' in arg.flags
+      else:
+        return 'exact' not in arg.flags
+
+    if term.op == LLVMBoolPred.hasNSW:
+      arg = term.args[0]
+      if not (isinstance(arg, BinOp) and arg.op in 
+          {BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Shl}):
+        return False
+
+      if model[get_hasflag_var(arg.getName(), 'nsw')]:
+        return 'nsw' in arg.flags
+      else:
+        return 'nsw' not in arg.flags
+
+    if term.op == LLVMBoolPred.hasNUW:
+      arg = term.args[0]
+      if not (isinstance(arg, BinOp) and arg.op in 
+          {BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Shl}):
+        return False
+
+      if model[get_hasflag_var(term.getName(), 'nuw')]:
+        return 'nuw' in arg.flags
+      else:
+        return 'nuw' not in arg.flags
+
+    return True
+
 def satisfiable(opt):
   '''check whether a transformation's precondition can be satisfied'''
   
   log = logger.getChild('satisfiable')
   log.info('checking %s', opt.name)
   log.debug('\n%s', opt)
+  pc = PreconditionChecker()
   
   try:
     for types in opt.type_models():
@@ -1307,10 +1367,18 @@ def satisfiable(opt):
       res = s.check()
     
       if res == sat:
-        log.info('success: %s', s.model())
-        #TODO: make this loggable
-        #alive.print_var_vals(s, srcv, tgtv, 'X', types)
-        return True
+        m = s.model()
+        # rather than create a bunch of Z3 variables for all opts,
+        # check any hasNSW/isConstant preconditions here
+
+        if opt.pre.visit(pc, m):
+          log.info('success: %s', m)
+          #TODO: make this loggable
+          #alive.print_var_vals(s, srcv, tgtv, 'X', types)
+          return True
+        else:
+          log.info('Failed precondition check')
+
   except AliveTypeError as e:
     log.info('type error: %s', e)
 

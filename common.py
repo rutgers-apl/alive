@@ -237,6 +237,13 @@ def get_pick_one_type():
 
 ##########################
 
+def get_isconst_var(name):
+  return BitVec('cnst_' + name, 1)
+
+def get_hasflag_var(flag, inst):
+  #TODO: see whether this can be combined with get_flag_var
+  return BitVec('f_%s_%s' % (flag, inst), 1)
+
 # number of users of an instruction
 def get_users_var(name):
   return BitVec('u_' + name, 8)
