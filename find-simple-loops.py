@@ -165,16 +165,15 @@ def queue_printer(result_queue):
     print result
 
 # TODO: track child processes so we can handle exceptions gracefully
-def search_manager(suite, prefix_length, length, max, log_config):
+def search_manager(suite, prefix_length, length, max, procs, log_config):
   log = logger.getChild('search_manager')
   log.info('Starting manager')
   
-  prefix_queue = multiprocessing.JoinableQueue()
+  prefix_queue = multiprocessing.JoinableQueue(procs)
   status_queue = multiprocessing.Queue()
   result_queue = multiprocessing.Queue()
   finished = threading.Event()
-  procs = 1
-  
+
   prefix_thread = threading.Thread(
     target=prefix_generator,
     args=(prefix_length, max, procs, prefix_queue, finished))
@@ -272,6 +271,8 @@ def main():
     help='Length of cycles following the prefix')
   parser.add_argument('file', type=str,
     help='optimization suite to analyze')
+  parser.add_argument('-p', '--procs', type=int,
+    help='Number of sub-processes', default=1)
   
   args = parser.parse_args()
   
@@ -280,7 +281,11 @@ def main():
   if args.prefix_length < 1 or args.suffix_length < 1:
     sys.stderr.write('cycle length must be positive\n')
     exit(1)
-  
+
+  if args.procs < 1:
+    sys.stderr.write('Must use at least one process')
+    exit(1)
+
   if not os.path.exists(args.file):
     sys.stderr.write(args.file + ': not found\n')
     exit(1)
@@ -290,10 +295,10 @@ def main():
   max = count_opts(args.file)
   
   logger.info('Counted %s opts', max)
-  #exit(0)
   
   try:
-    search_manager(args.file, args.prefix_length, args.suffix_length, max, log_config)
+    search_manager(args.file, args.prefix_length, args.suffix_length, max, 
+      args.procs, log_config)
   finally:
     logger.debug('Closing queue listener')
     ql.stop()
