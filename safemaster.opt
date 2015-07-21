@@ -96,12 +96,6 @@ Name: AddSub:1152
 %r = xor %x, %y
 
 
-Name: AddSub:1156
-%a = add %b, %b
-  =>
-%a = shl %b, 1
-
-
 Name: AddSub:1156-2
 %a = add nsw %b, %b
   =>
@@ -112,6 +106,12 @@ Name: AddSub:1156-3
 %a = add nuw %b, %b
   =>
 %a = shl nuw %b, 1
+
+
+Name: AddSub:1156
+%a = add %b, %b
+  =>
+%a = shl %b, 1
 
 
 Name: AddSub:1164
@@ -203,13 +203,6 @@ Name: AddSub:1295
 %c = or %a, %b
 
 
-Name: AddSub:1309
-%lhs = and %a, %b
-%rhs = or %a, %b
-%c = add %lhs, %rhs
-  =>
-%c = add %a, %b
-
 Name: AddSub:1309-2
 %lhs = and %a, %b
 %rhs = or %a, %b
@@ -224,6 +217,14 @@ Name: AddSub:1309-3
 %c = add nuw %lhs, %rhs
   =>
 %c = add nuw %a, %b
+
+
+Name: AddSub:1309
+%lhs = and %a, %b
+%rhs = or %a, %b
+%c = add %lhs, %rhs
+  =>
+%c = add %a, %b
 
 
 Name: AddSub:1334
@@ -426,7 +427,8 @@ Name: AndOrXor:135
 
 
 Name: AndOrXor:144
-;Pre: C1&C2 != C1  -- only for profitability
+Pre: C1&C2 != C1
+; -- only for profitability
 %op = or %X, C1
 %r = and %op, C2
   =>
@@ -435,8 +437,8 @@ Name: AndOrXor:144
 
 
 Name: AndOrXor:151
-Pre: (C1 & C2) == C1
-; && (C1 & C2) != 0  -- only for profitability
+Pre: (C1 & C2) == C1 && (C1 & C2) != 0
+; -- only for profitability
 %op = or %X, C1
 %r = and %op, C2
   =>
@@ -489,8 +491,8 @@ Pre: C2 & lshr(-1, C1) == lshr(-1, C1)
 
 
 Name: AndOrXor:230
-Pre: C2 & lshr(-1, C1) != lshr(-1, C1)
-; && C2 & lshr(-1, C1) != C2 -- profitability only
+Pre: (C2 & lshr(-1, C1) != lshr(-1, C1)) && C2 & lshr(-1, C1) != C2
+; -- profitability only
 %op = lshr %X, C1
 %r = and %op, C2
   =>
@@ -2473,17 +2475,26 @@ Pre: C u>= (1<<(width(C)-1))
 %r = select %c, 0, 1
 
 
+Name: 891-exact
+%s = shl 1, %N
+%r = udiv exact %x, %s
+  =>
+%r = lshr exact %x, %N
+
 Name: 891
 %s = shl 1, %N
 %r = udiv %x, %s
   =>
 %r = lshr %x, %N
 
-Name: 891-exact
-%s = shl 1, %N
+
+Name: 891-2-exact
+Pre: isPowerOf2(C)
+%s = shl C, %N
 %r = udiv exact %x, %s
   =>
-%r = lshr exact %x, %N
+%N2 = add %N, log2(C)
+%r = lshr exact %x, %N2
 
 Name: 891-2
 Pre: isPowerOf2(C)
@@ -2494,13 +2505,15 @@ Pre: isPowerOf2(C)
 %r = lshr %x, %N2
 
 
-Name: 891-2
+Name: 891-3-exact
 Pre: isPowerOf2(C)
 %s = shl C, %N
-%r = udiv exact %x, %s
+%Op1 = zext %s
+%r = udiv exact %x, %Op1
   =>
 %N2 = add %N, log2(C)
-%r = lshr exact %x, %N2
+%N3 = zext %N2
+%r = lshr exact %x, %N3
 
 
 Name: 891-3
@@ -2512,17 +2525,6 @@ Pre: isPowerOf2(C)
 %N2 = add %N, log2(C)
 %N3 = zext %N2
 %r = lshr %x, %N3
-
-
-Name: 891-3
-Pre: isPowerOf2(C)
-%s = shl C, %N
-%Op1 = zext %s
-%r = udiv exact %x, %Op1
-  =>
-%N2 = add %N, log2(C)
-%N3 = zext %N2
-%r = lshr exact %x, %N3
 
 
 Name: 968
@@ -3317,20 +3319,20 @@ Pre: isPowerOf2(C)
 %r = lshr %Op0, %a
 
 
-Name: InstCombineShift: 228
-Pre: zext(C1+C2) >= width(C1)
-%Op0 = shl %X, C1
-%r = shl %Op0, C2
-  =>
-%r = 0
-
-
-Name: InstCombineShift: 234
-Pre: zext(C1+C2) < width(C2)
-%Op0 = shl %X, C1
-%r = shl %Op0, C2
-  =>
-%r = shl %X, C1+C2
+; ame: InstCombineShift: 228
+; Pre: zext(C1+C2) >= width(C1)
+; %Op0 = shl %X, C1
+; %r = shl %Op0, C2
+;   =>
+; %r = 0
+; 
+; 
+; ame: InstCombineShift: 234
+; Pre: zext(C1+C2) < width(C2)
+; %Op0 = shl %X, C1
+; %r = shl %Op0, C2
+;   =>
+; %r = shl %X, C1+C2
 
 
 Name: InstCombineShift: 239
@@ -3348,20 +3350,20 @@ Pre: C1 > C2 && MaskedValueIsZero(%X, (-1 u>> (width(C2)-C2)) << (width(C1)-C1))
 %r = shl %X, C1-C2
 
 
-Name: InstCombineShift: 270
-Pre: zext(C1+C2) >= width(C1)
-%Op0 = lshr %X, C1
-%r = lshr %Op0, C2
-  =>
-%r = 0
-
-
-Name: InstCombineShift: 274
-Pre: zext(C1+C2) < width(C1)
-%Op0 = lshr %X, C1
-%r = lshr %Op0, C2
-  =>
-%r = lshr %X, C1+C2
+; ame: InstCombineShift: 270
+; Pre: zext(C1+C2) >= width(C1)
+; %Op0 = lshr %X, C1
+; %r = lshr %Op0, C2
+;   =>
+; %r = 0
+; 
+; 
+; ame: InstCombineShift: 274
+; Pre: zext(C1+C2) < width(C1)
+; %Op0 = lshr %X, C1
+; %r = lshr %Op0, C2
+;   =>
+; %r = lshr %X, C1+C2
 
 
 Name: InstCombineShift: 279
@@ -3539,28 +3541,28 @@ Name: InstCombineShift: 497
 %r = add %s2, C2 << C
 
 
-Name: InstCombineShift: 573
-Pre: zext(C+C2) >= width(C)
-%Op0 = shl %X, C2
-%r = shl %Op0, C
-  =>
-%r = 0
-
-
-Name: InstCombineShift: 574
-Pre: zext(C+C2) >= width(C)
-%Op0 = ashr %X, C2
-%r = ashr %Op0, C
-  =>
-%r = ashr %X, width(C)-1
-
-
-Name: InstCombineShift: 577
-Pre: zext(C+C2) < width(C)
-%Op0 = shl %X, C2
-%r = shl %Op0, C
-  =>
-%r = shl %X, C+C2
+; ame: InstCombineShift: 573
+; Pre: zext(C+C2) >= width(C)
+; %Op0 = shl %X, C2
+; %r = shl %Op0, C
+;   =>
+; %r = 0
+; 
+; 
+; ame: InstCombineShift: 574
+; Pre: zext(C+C2) >= width(C)
+; %Op0 = ashr %X, C2
+; %r = ashr %Op0, C
+;   =>
+; %r = ashr %X, width(C)-1
+; 
+; 
+; ame: InstCombineShift: 577
+; Pre: zext(C+C2) < width(C)
+; %Op0 = shl %X, C2
+; %r = shl %Op0, C
+;   =>
+; %r = shl %X, C+C2
 
 
 Name: InstCombineShift: 582
@@ -3643,20 +3645,20 @@ Pre: C1 < C2
 %r = and %s, -1 u>> C2
 
 
-Name: InstCombineShift: 628
-Pre: C1 < C2
-%Op0 = shl nsw %X, C1
-%r = ashr %Op0, C2
-  =>
-%r = ashr %X, C2-C1
-
-
 Name: InstCombineShift: 628-2
 Pre: C1 < C2
 %Op0 = shl nsw %X, C1
 %r = ashr exact %Op0, C2
   =>
 %r = ashr exact %X, C2-C1
+
+
+Name: InstCombineShift: 628
+Pre: C1 < C2
+%Op0 = shl nsw %X, C1
+%r = ashr %Op0, C2
+  =>
+%r = ashr %X, C2-C1
 
 
 Name: InstCombineShift: 646
