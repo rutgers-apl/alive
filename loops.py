@@ -1269,64 +1269,70 @@ def mk_conjoin(ps):
   return PredAnd(*ps)
 
 
-class PreconditionChecker(Visitor):
-  def visit_TruePred(self, term, model):
-    return True
+class PredicateLister(Visitor):
+  '''
+  Generate all predicates in the given precondition.
+  '''
 
-  def visit_PredNot(self, term, model):
-    return not term.v.visit(self, model)
+  def default(self, term):
+    return ()
 
-  def visit_PredAnd(self, term, model):
-    return all(a.visit(self, model) for a in term.args)
+  def visit_PredNot(self, term):
+    return term.v.visit(self)
 
-  def visit_PredOr(self, term, model):
-    return any(a.visit(self, model) for a in term.args)
+  def visit_PredAnd(self, term):
+    return chain.from_iterable(a.visit(self) for a in term.args)
 
-  def visit_BinaryBoolPred(self, term, model):
-    return True
+  def visit_PredOr(self, term):
+    return chain.from_iterable(a.visit(self) for a in term.args)
 
-  def visit_LLVMBoolPred(self, term, model):
-    if term.op == LLVMBoolPred.isConstant:
-      arg = term.args[0]
-      # TODO: consider edge cases where Z3 might pick wrong
-      # e.g., isConstant(%a) || !isConstant(%a)
-      isConst = model[get_isconst_var(arg.getUniqueName())]
-      return bool(isConst) == isConstExpr(arg)
+  def visit_LLVMBoolPred(self, term):
+    return (term,)
 
-    if term.op == LLVMBoolPred.isExact:
-      arg = term.args[0]
-      if not (isinstance(arg, BinOp) and arg.op in 
-          {BinOp.UDiv, BinOp.SDiv, BinOp.AShr, BinOp.LShr}):
-        return False
+def syntax_preconditions(pre):
+  '''
+  For each term mentioned in hasNSW/hasNUW/isConstant/isExact,
+  return the precondition implied by the syntax (i.e., whether
+  the value is required to be constant, etc.)
 
-      if model[get_hasflag_var(arg.getName(), 'exact')]:
-        return 'exact' in arg.flags
-      else:
-        return 'exact' not in arg.flags
+  This is an alternative to setting these conditions for every
+  constant and flaggable BinOp, since we only care about them
+  when one of these predicates are present.
+  '''
+  lister = PredicateLister()
 
-    if term.op == LLVMBoolPred.hasNSW:
-      arg = term.args[0]
-      if not (isinstance(arg, BinOp) and arg.op in 
-          {BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Shl}):
-        return False
+  for p in pre.visit(lister):
+    arg = p.args[0]
 
-      if model[get_hasflag_var(arg.getName(), 'nsw')]:
-        return 'nsw' in arg.flags
-      else:
-        return 'nsw' not in arg.flags
+    if p.op == LLVMBoolPred.isConstant:
+      if isConstExpr(arg):
+        yield get_isconst_var(arg.getUniqueName()) == True
+      elif isinstance(arg, Instr):
+        yield get_isconst_var(arg.getUniqueName()) == False
 
-    if term.op == LLVMBoolPred.hasNUW:
-      arg = term.args[0]
-      if not (isinstance(arg, BinOp) and arg.op in 
-          {BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Shl}):
-        return False
+    elif p.op == LLVMBoolPred.hasNSW:
+      if not (isinstance(arg, BinOp) and
+          arg.op in {BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Shl}):
+        yield get_hasflag_var(arg.getUniqueName(), 'nsw') == False
 
-      if model[get_hasflag_var(term.getName(), 'nuw')]:
-        return 'nuw' in arg.flags
-      else:
-        return 'nuw' not in arg.flags
+      elif 'nsw' in arg.flags:
+        yield get_hasflag_var(arg.getUniqueName(), 'nsw') == True
 
-    return True
+    elif p.op == LLVMBoolPred.hasNUW:
+      if not (isinstance(arg, BinOp) and
+          arg.op in {BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Shl}):
+        yield get_hasflag_var(arg.getUniqueName(), 'nuw') == False
+
+      elif 'nuw' in arg.flags:
+        yield get_hasflag_var(arg.getUniqueName(), 'nuw') == True
+
+    elif p.op == LLVMBoolPred.isExact:
+      if not (isinstance(arg, BinOp) and
+          arg.op in {BinOp.UDiv, BinOp.SDiv, BinOp.AShr, BinOp.LShr}):
+        yield get_hasflag_var(arg.getUniqueName(), 'exact') == False
+
+      elif 'exact' in arg.flags:
+        yield get_hasflag_var(arg.getUniqueName(), 'exact') == True
 
 def satisfiable(opt):
   '''check whether a transformation's precondition can be satisfied'''
@@ -1334,8 +1340,7 @@ def satisfiable(opt):
   log = logger.getChild('satisfiable')
   log.info('checking %s', opt.name)
   log.debug('\n%s', opt)
-  pc = PreconditionChecker()
-  
+
   try:
     for types in opt.type_models():
       #print 'attempting'
@@ -1355,14 +1360,21 @@ def satisfiable(opt):
   srcv %s
   tgtv %s''', types, srcv.vars, tgtv.vars)
         raise
-  
+
       extra_cnstrs = pre_d + pre  # NOTE: not checking allocas
-    
+
       # show satsifiability
       # NOTE: does this need to know about qvars?
       s = alive.tactic.solver()
       s.add(extra_cnstrs)
-      #print 'checking', s
+
+      # get relevant preconditions implied by the syntax
+      syntax_cnstrs = tuple(syntax_preconditions(opt.pre))
+      log.debug('syntax_cnstrs %s', syntax_cnstrs)
+      s.add(syntax_cnstrs)
+
+      log.debug('goal %s', s)
+
       alive.gen_benchmark(s)
       res = s.check()
     
@@ -1371,13 +1383,11 @@ def satisfiable(opt):
         # rather than create a bunch of Z3 variables for all opts,
         # check any hasNSW/isConstant preconditions here
 
-        if opt.pre.visit(pc, m):
-          log.info('success: %s', m)
-          #TODO: make this loggable
-          #alive.print_var_vals(s, srcv, tgtv, 'X', types)
-          return True
-        else:
-          log.info('Failed precondition check')
+
+        log.info('success: %s', m)
+        #TODO: make this loggable
+        #alive.print_var_vals(s, srcv, tgtv, 'X', types)
+        return True
 
   except AliveTypeError as e:
     log.info('type error: %s', e)

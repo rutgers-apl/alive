@@ -227,14 +227,14 @@ Name: AddSub:1309-3
 
 
 Name: AddSub:1334
-Pre: WillNotOverflowSignedAdd(%lhs, %rhs)
+Pre: !hasNSW(%r) && WillNotOverflowSignedAdd(%lhs, %rhs)
 %r = add %lhs, %rhs
   =>
 %r = add nsw %lhs, %rhs
 
 
 Name: AddSub:1338
-Pre: WillNotOverflowUnsignedAdd(%lhs, %rhs)
+Pre: !hasNUW(%r) && WillNotOverflowUnsignedAdd(%lhs, %rhs)
 %r = add %lhs, %rhs
   =>
 %r = add nuw %lhs, %rhs
@@ -405,14 +405,14 @@ Name: AddSub:1667
 
 
 Name: AddSub:1693
-Pre: WillNotOverflowSignedSub(%A, %B)
+Pre: !hasNSW(%r) && WillNotOverflowSignedSub(%A, %B)
 %r = sub %A, %B
   =>
 %r = sub nsw %A, %B
 
 
 Name: AddSub:1697
-Pre: WillNotOverflowUnsignedSub(%A, %B)
+Pre: !hasNUW(%r) && WillNotOverflowUnsignedSub(%A, %B)
 %r = sub %A, %B
   =>
 %r = sub nuw %A, %B
@@ -1005,7 +1005,7 @@ Pre: MaskedValueIsZero(%op0RHS, ~C)
 
 
 Name: AndOrXor:1175
-Pre: MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))
+Pre: !isConstant(%A) && MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))
 %lhs = sub %A, %B
 %r = and %lhs, C
   =>
@@ -1996,7 +1996,7 @@ Pre: hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 2
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !isExact(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = udiv %X, %Y
   =>
@@ -2005,7 +2005,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 3
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !hasNUW(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = udiv %X, %Y
   =>
@@ -2026,7 +2026,7 @@ Pre: hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 5
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !isExact(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = sdiv %X, %Y
   =>
@@ -2035,7 +2035,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 6
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !hasNUW(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = sdiv %X, %Y
   =>
@@ -2056,7 +2056,7 @@ Pre: hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 8
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !isExact(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = urem %X, %Y
   =>
@@ -2065,7 +2065,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 9
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !hasNUW(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = urem %X, %Y
   =>
@@ -2086,7 +2086,7 @@ Pre: hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 11
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !isExact(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = srem %X, %Y
   =>
@@ -2095,7 +2095,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 Name: simplifyValueKnownNonZero 12
-Pre: isPowerOf2(%A) && hasOneUse(%Y)
+Pre: !hasNUW(%Y) && isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = srem %X, %Y
   =>
@@ -2135,7 +2135,8 @@ Pre: isPowerOf2(C1)
 
 
 Name: 201
-Pre: C < 0 && isPowerOf2(abs(C))
+Pre: C < 0 && isPowerOf2(abs(C)) && !isSignBit(C)
+; NOTE: !isSignBit(C) redundant, caught by 168
 %Op0 = sub %Y, %X
 %r = mul %Op0, C
   =>
@@ -2960,6 +2961,7 @@ Name: Select:637
 
 
 Name: Select:641
+Pre: !isConstant(%X)
 %c = icmp ne %X, C
 %r = select %c, %Y, %X
   =>
@@ -3699,14 +3701,14 @@ Pre: C1 > C2
 
 
 Name: InstCombineShift: 708
-Pre: MaskedValueIsZero(%Op0, -1<<(width(C)-C))
+Pre: !hasNUW(%r) && MaskedValueIsZero(%Op0, -1<<(width(C)-C))
 %r = shl %Op0, C
   =>
 %r = shl nuw %Op0, C
 
 
 Name: InstCombineShift: 717
-Pre: ComputeNumSignBits(%Op0) > C
+Pre: !hasNSW(%r) && ComputeNumSignBits(%Op0) > C
 %r = shl %Op0, C
   =>
 %r = shl nsw %Op0, C
@@ -3720,7 +3722,7 @@ Name: InstCombineShift: 724
 
 
 Name: InstCombineShift: 767
-Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
+Pre: !isExact(%r) && MaskedValueIsZero(%Op0, (1<<C)-1)
 %r = lshr %Op0, C
   =>
 %r = lshr exact %Op0, C
@@ -3736,7 +3738,7 @@ Pre: C == width(%X)-width(%x)
 
 
 Name: InstCombineShift: 812
-Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
+Pre: !isExact(%r) && MaskedValueIsZero(%Op0, (1<<C)-1)
 %r = ashr %Op0, C
   =>
 %r = ashr exact %Op0, C
