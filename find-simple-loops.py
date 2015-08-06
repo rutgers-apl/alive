@@ -118,8 +118,10 @@ def search_process(suite, length, prefix_queue, result_queue, status_queue, log_
   while info[COUNT] < MAX_TESTS:
     p = prefix_queue.get()
     if p is None:
-      prefix_queue.task_done()
-      break
+      log.info('Worker exiting %s', info)
+      status_queue.put(info)
+      prefix_queue.task_done() # make sure this happens after putting the info
+      return
     
     log.info('Checking prefix %s', p)
     
@@ -150,7 +152,7 @@ def search_process(suite, length, prefix_queue, result_queue, status_queue, log_
 
     prefix_queue.task_done()
 
-  log.info('Worker exiting')
+  log.info('Worker exiting %s', info)
   status_queue.put(info)
   
 
@@ -213,6 +215,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
 
     # wait until all the sentinels have been received
     prefix_queue.join()
+    log.debug('All workers complete')
 
     # drain the leftovers
     while True:
@@ -278,7 +281,7 @@ def main():
   
   
   # FIXME: Need to make sure zero-length prefixes work
-  if args.prefix_length < 1 or args.suffix_length < 1:
+  if args.prefix_length < 1 or args.suffix_length < 0:
     sys.stderr.write('cycle length must be positive\n')
     exit(1)
 
