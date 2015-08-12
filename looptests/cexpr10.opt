@@ -1,0 +1,16 @@
+; expect 1 loop
+
+Name: AndOrXor:135
+%op = xor %X, C1
+%r = and %op, C2
+  =>
+%a = and %X, C2
+%r = xor %a, C1&C2
+
+Name: AndOrXor:2587  (B&A)^A -> ~B & A
+Pre: true
+  %op0 = and %a, %op1
+  %r = xor %op0, %op1
+=>
+  %na = xor %a, -1
+  %r = and %na, %op1

@@ -930,8 +930,8 @@ def _cycle_check(subsets, dependencies, sorted, parents):
 
     done[rep] = False
     vals = subsets.subset(rep)
-    uses = frozenset(subsets.rep(d) for v in vals for d in dependencies[v]
-                if d in subsets)
+    uses = frozenset(subsets.rep(d) for v in vals if isinstance(v.val, Instr)
+                for d in dependencies[v] if d in subsets)
 
     for k in uses:
       parents[k].add(rep)

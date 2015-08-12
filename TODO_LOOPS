@@ -1,4 +1,5 @@
 Errors:
+- CLOSED only reject instructions that depend on cycles, not all values
 - CLOSED take union of flags when doing matching (no, the current version is correct)
 - consider types when matching and unifying
 - crash5.opt gets an assertion error
