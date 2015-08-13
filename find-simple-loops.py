@@ -191,12 +191,13 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
       args=(suite, length, prefix_queue, result_queue, status_queue, log_config))
     p.start()
   
+  active = procs
   total_info = [0,0,0,0]
   try:
     prefix_thread.start()
     result_thread.start()
     # read from the result queue until the prefix generator completes
-    while True:
+    while active > 0:
       r = status_queue.get(block=True)
       log.debug('Got result %s', r)
 
@@ -206,29 +207,13 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
       log.info('Current totals %s', total_info)
 
       if finished.is_set():
-        break
+        active -= 1
+        log.debug('%s workers active', active)
       else:
         p = multiprocessing.Process(
           target=search_process,
           args=(suite, length, prefix_queue, status_queue, log_config))
         p.start()
-
-    # wait until all the sentinels have been received
-    prefix_queue.join()
-    log.debug('All workers complete')
-
-    # drain the leftovers
-    while True:
-      try:
-        r = status_queue.get(block=False)
-        log.debug('Got result %s', r)
-
-        for i in range(4):
-          total_info[i] += r[i]
-
-        log.info('Current totals %s', total_info)
-      except Queue.Empty:
-        break
 
     log.info('Final: Candidates %s Sat_Checks %s Cycles %s Errors %s', *total_info)
   finally:
