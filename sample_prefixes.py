@@ -56,13 +56,13 @@ def random_prefixes(length, max):
       yield prefix
 
 
-def prefix_generator(length, max, procs, prefix_queue, finished):
+def prefix_generator(length, max, procs, prefix_queue, finished, seed=None):
   'Thread worker which generates prefixes and sends them to a queue'
   
   log = logger.getChild('prefix_generator')
   log.debug('Prefix generator started')
   
-  random.seed('xfar')
+  random.seed(seed)
   
   for p in random_prefixes(length, max):
     log.debug('Generated %s', p)
@@ -240,7 +240,7 @@ def queue_printer(result_queue):
     print result
 
 # TODO: track child processes so we can handle exceptions gracefully
-def search_manager(suite, comp_limit, prefix_length, length, max, procs, log_config):
+def search_manager(suite, comp_limit, prefix_length, length, max, procs, seed, log_config):
   log = logger.getChild('search_manager')
   log.info('Starting manager')
   
@@ -251,7 +251,7 @@ def search_manager(suite, comp_limit, prefix_length, length, max, procs, log_con
 
   prefix_thread = threading.Thread(
     target=prefix_generator,
-    args=(prefix_length, max - length, procs, prefix_queue, finished))
+    args=(prefix_length, max - length, procs, prefix_queue, finished, seed))
   prefix_thread.daemon = True # no cleanup needed if we get a KeyboardInterrupt
 
   result_thread = threading.Thread(
@@ -342,7 +342,9 @@ def main():
     help='Number of sequences to test')
   parser.add_argument('-p', '--procs', type=int,
     help='Number of sub-processes', default=1)
-  
+  parser.add_argument('--seed', type=str,
+    help='Seed for random number generator')
+
   args = parser.parse_args()
   
   
@@ -367,7 +369,7 @@ def main():
   
   try:
     search_manager(args.file, args.tests, args.prefix_length, args.suffix_length, max, 
-      args.procs, log_config)
+      args.procs, args.seed, log_config)
   finally:
     logger.debug('Closing queue listener')
     ql.stop()
