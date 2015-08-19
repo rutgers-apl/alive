@@ -226,7 +226,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
       else:
         p = multiprocessing.Process(
           target=search_process,
-          args=(suite, length, prefix_queue, status_queue, log_config))
+          args=(suite, length, prefix_queue, result_queue, status_queue, log_config))
         p.start()
 
     log.info('Final: Paths %s Comps %s SelfComps %s Sat_Checks %s Cycles %s Errors %s', *total_info)
@@ -260,7 +260,7 @@ def main():
 
   #h = logging.FileHandler(filename='find-simple-loops.log', mode='w')
   h = logging.StreamHandler()
-  f = logging.Formatter('%(asctime)s - %(levelname)-8s - %(name)s - %(message)s')
+  f = logging.Formatter('%(asctime)s - %(levelname)-8s - %(processName)-12s - %(name)s - %(message)s')
   h.setFormatter(f)
   ql = logutils.queue.QueueListener(log_queue, h)
   ql.start()
