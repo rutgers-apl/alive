@@ -8,6 +8,15 @@ import threading, multiprocessing
 
 logger = logging.getLogger(__name__)
 
+def perms(n,r):
+  assert n >= r
+  return reduce(lambda x,y: x*y, xrange(n,n-r,-1), 1)
+
+def prefix_size(prefix, length, max):
+  min = prefix[0] + len(prefix)
+  return perms(max - min, length)
+
+
 def prefixes(length, max):
   'Generate tuples of given length corresponding to unique prefixes of cycles'
 
@@ -99,7 +108,8 @@ status = '\rTested: {} SatChecks: {} Loops: {}'
 def count_src(o):
   return sum(1 for v in o.src.itervalues() if isinstance(v, loops.Instr))
 
-COUNT, SAT_CHECKS, CYCLES, ERRORS = range(4)
+INFO_FLDS = 6
+SEQS, COMPS, SELF_COMPS, SAT_CHECKS, CYCLES, ERRORS = range(INFO_FLDS)
 MAX_TESTS = 50000
 
 def search_process(suite, length, prefix_queue, result_queue, status_queue, log_config):
@@ -110,12 +120,12 @@ def search_process(suite, length, prefix_queue, result_queue, status_queue, log_
 
   log.debug('%s optimizations', len(opts))
 
-  info = [0,0,0,0]
+  info = [0] * INFO_FLDS
   
   def count_error(e,o1,o2):
     info[ERRORS] += 1
-  
-  while info[COUNT] < MAX_TESTS:
+
+  while info[COMPS] < MAX_TESTS:
     p = prefix_queue.get()
     if p is None:
       log.info('Worker exiting %s', info)
@@ -127,12 +137,15 @@ def search_process(suite, length, prefix_queue, result_queue, status_queue, log_
     
     for o,os in search_after_prefix(opts, length, p, count_error):
       o_src = count_src(o)
+
+      info[COMPS] += 1
+
+      if info[COMPS] % 1000 == 0:
+        log.info('Seqs %s Comps %s SelfComps %s SatChecks %s Loops %s Errors %s', *info)
       
       for oo in loops.all_bin_compositions(o, o, count_error):
-        if info[COUNT] % 1000 == 0:
-          log.info('Tested %s SatChecks %s Loops %s Errors %s', *info)
   
-        info[COUNT] += 1
+        info[SELF_COMPS] += 1
         
         oo_src = count_src(oo)
         
@@ -150,6 +163,7 @@ def search_process(suite, length, prefix_queue, result_queue, status_queue, log_
         result_queue.put(result)
         log.info(result)
 
+    info[SEQS] += prefix_size(p, length, len(opts))
     prefix_queue.task_done()
 
   log.info('Worker exiting %s', info)
@@ -178,7 +192,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
 
   prefix_thread = threading.Thread(
     target=prefix_generator,
-    args=(prefix_length, max, procs, prefix_queue, finished))
+    args=(prefix_length, max - length, procs, prefix_queue, finished))
   prefix_thread.daemon = True # no cleanup needed if we get a KeyboardInterrupt
 
   result_thread = threading.Thread(
@@ -192,7 +206,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
     p.start()
   
   active = procs
-  total_info = [0,0,0,0]
+  total_info = [0] * INFO_FLDS
   try:
     prefix_thread.start()
     result_thread.start()
@@ -201,7 +215,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
       r = status_queue.get(block=True)
       log.debug('Got result %s', r)
 
-      for i in range(4):
+      for i in range(INFO_FLDS):
         total_info[i] += r[i]
 
       log.info('Current totals %s', total_info)
@@ -215,7 +229,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
           args=(suite, length, prefix_queue, status_queue, log_config))
         p.start()
 
-    log.info('Final: Candidates %s Sat_Checks %s Cycles %s Errors %s', *total_info)
+    log.info('Final: Paths %s Comps %s SelfComps %s Sat_Checks %s Cycles %s Errors %s', *total_info)
   finally:
     log.debug('Closing result queue reader')
     result_queue.put(None)
@@ -244,8 +258,8 @@ def main():
     }
   }
 
-  h = logging.FileHandler(filename='find-simple-loops.log', mode='w')
-  #h = logging.StreamHandler()
+  #h = logging.FileHandler(filename='find-simple-loops.log', mode='w')
+  h = logging.StreamHandler()
   f = logging.Formatter('%(asctime)s - %(levelname)-8s - %(name)s - %(message)s')
   h.setFormatter(f)
   ql = logutils.queue.QueueListener(log_queue, h)
@@ -290,99 +304,6 @@ def main():
   finally:
     logger.debug('Closing queue listener')
     ql.stop()
-
-def old_main():
-  logging.basicConfig(filename='find-simple-loops.log', #filemode='w',
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-  logger = logging.getLogger('find-simple-loops')
-  logger.setLevel(logging.INFO)
-
-  parser = argparse.ArgumentParser()
-  parser.add_argument('length', type=int,
-    help='Length of cycles to search for')
-  parser.add_argument('file', type=argparse.FileType('r'),
-    help='optimization suite to analyze')
-  parser.add_argument('-q', '--quiet', action='store_true',
-    help='Suppress status updates')
-  parser.add_argument('--prefix', type=str,
-    help='Common prefix as comma-separated list of indices')
-
-  args = parser.parse_args()
-
-  if args.length < 1:
-    sys.stderr.write('cycle length must be positive\n')
-    exit(1)
-
-  logger.info('Searching %s for %s-cycles', args.file.name, args.length)
-  if not args.quiet:
-    sys.stderr.write('Reading ' + args.file.name + '\n')
-  
-  opts = loops.parse_transforms(args.file.read())
-  
-  logger.info('%s optimizations', len(opts))
-  if not args.quiet:
-    sys.stderr.write('{} optimizations'.format(len(opts)))
-
-  count = 0
-  sat_checks = 0
-  cycles = 0
-  errors = [0]
-  
-  def count_error(e,o1,o2):
-    errors[0] += 1
-  
-  if args.prefix:
-    prefix_idxs = tuple(int(i) for i in args.prefix.split(','))
-    logger.info('Using prefix %s', prefix_idxs)
-    candidates = search_after_prefix(opts, args.length, prefix_idxs, count_error)
-  else:
-    candidates = search(opts, args.length, count_error)
-
-  for o,os in candidates:
-    o_src = count_src(o)
-    for oo in loops.all_bin_compositions(o, o, count_error):
-      if count % 1000 == 0:
-        logger.info('Tested %s SatChecks %s Loops %s Errors %s',
-          count, sat_checks, cycles, errors[0])
-      
-      if count % 10000 == 0 and logger.isEnabledFor(logging.INFO):
-        gc.collect()
-        logger.info('Live objects %s; Uncollectable %s', len(gc.get_objects()), len(gc.garbage))
-
-      if not args.quiet:
-        sys.stderr.write(status.format(count, sat_checks, cycles))
-      count += 1
-
-      oo_src = count_src(oo)
-
-      if o_src < oo_src:
-        continue
-
-      sat_checks += 1
-      if not loops.satisfiable(oo):
-        continue
-
-      cycles += 1
-      print '\n-----\nLoop: ', o.name
-      for opt in os:
-        opt.dump()
-        print
-      o.dump()
-  
-  if not args.quiet:
-    sys.stderr.write(status.format(count, sat_checks, cycles))
-    sys.stderr.write('\n')
-
-  print
-  print 'final count', count
-  print 'loops', cycles
-  print 'sat_checks', sat_checks
-  print 'errors', errors[0]
-  
-  if logger.isEnabledFor(logging.INFO):
-    logger.info('Finished: Tested %s SatChecks %s Loops %s Errors %s',
-      count, sat_checks, cycles, errors[0])
-    logger.info('Live objects %s; Uncollectable %s', len(gc.get_objects()), len(gc.garbage))
 
 
 if __name__ == '__main__':
