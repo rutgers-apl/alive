@@ -281,9 +281,8 @@ def search_manager(suite, comp_limit, prefix_length, length, max, procs, seed, l
         total_info[i] += r[i]
 
       log.info('Current totals %s', total_info)
-      exit()
 
-      if finished.is_set() or tests <= 0:
+      if finished.is_set() or comp_list <= 0:
         active -= 1
         log.debug('%s workers active', active)
       else:
