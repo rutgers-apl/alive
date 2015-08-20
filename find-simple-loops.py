@@ -17,7 +17,7 @@ def prefix_size(prefix, length, max):
   return perms(max - min, length)
 
 
-def prefixes(length, max):
+def prefixes(length, suffix_length, max):
   'Generate tuples of given length corresponding to unique prefixes of cycles'
 
   if length < 1:
@@ -28,24 +28,24 @@ def prefixes(length, max):
       yield prev
       return
 
-    for i in range(min,max):
+    for i in xrange(min,max):
       if i in prev:
         continue
       prev2 = prev + (i,)
       for p in _prefixes_after(length-1, max, min, prev2):
         yield p
 
-  for i in range(0, max - length + 1):
+  for i in xrange(0, max - length + 1 - suffix_length):
     for p in _prefixes_after(length-1, max, i+1, (i,)):
       yield p
 
-def prefix_generator(length, max, procs, prefix_queue, finished):
+def prefix_generator(length, suffix_length, max, procs, prefix_queue, finished):
   'Thread worker which generates prefixes and sends them to a queue'
   
   log = logger.getChild('prefix_generator')
   log.debug('Prefix generator started')
   
-  for p in prefixes(length, max):
+  for p in prefixes(length, suffix_length, max):
     log.debug('Generated %s', p)
     prefix_queue.put(p)
   
@@ -192,7 +192,7 @@ def search_manager(suite, prefix_length, length, max, procs, log_config):
 
   prefix_thread = threading.Thread(
     target=prefix_generator,
-    args=(prefix_length, max - length, procs, prefix_queue, finished))
+    args=(prefix_length, length, max, procs, prefix_queue, finished))
   prefix_thread.daemon = True # no cleanup needed if we get a KeyboardInterrupt
 
   result_thread = threading.Thread(
@@ -258,8 +258,8 @@ def main():
     }
   }
 
-  #h = logging.FileHandler(filename='find-simple-loops.log', mode='w')
-  h = logging.StreamHandler()
+  h = logging.FileHandler(filename='find-simple-loops.log', mode='w')
+  #h = logging.StreamHandler()
   f = logging.Formatter('%(asctime)s - %(levelname)-8s - %(processName)-12s - %(name)s - %(message)s')
   h.setFormatter(f)
   ql = logutils.queue.QueueListener(log_queue, h)
