@@ -1,5 +1,5 @@
 ; AddSub:1334
-Name: add 1
+Name: AddSub 1
 Pre: WillNotOverflowSignedAdd(%lhs, %rhs)
 %r = add %lhs, %rhs
   =>
@@ -7,7 +7,7 @@ Pre: WillNotOverflowSignedAdd(%lhs, %rhs)
 
 
 ; AddSub:1338
-Name: add 2
+Name: AddSub 2
 Pre: WillNotOverflowUnsignedAdd(%lhs, %rhs)
 %r = add %lhs, %rhs
   =>
@@ -15,14 +15,14 @@ Pre: WillNotOverflowUnsignedAdd(%lhs, %rhs)
 
 
 ; AddSub:1539-2
-Name: sub 1
+Name: AddSub 3
 %r = sub %x, C
   =>
 %r = add %x, -C
 
 
 ; AddSub:1549
-Name: sub 2
+Name: AddSub 4
 Pre: C != 1 << (width(C)-1)
 %r = sub nsw %x, C
   =>
@@ -30,7 +30,7 @@ Pre: C != 1 << (width(C)-1)
 
 
 ; AddSub:1693
-Name: sub 3
+Name: AddSub 5
 Pre: WillNotOverflowSignedSub(%A, %B)
 %r = sub %A, %B
   =>
@@ -38,7 +38,7 @@ Pre: WillNotOverflowSignedSub(%A, %B)
 
 
 ; AddSub:1697
-Name: sub 4
+Name: AddSub 6
 Pre: WillNotOverflowUnsignedSub(%A, %B)
 %r = sub %A, %B
   =>
@@ -46,7 +46,7 @@ Pre: WillNotOverflowUnsignedSub(%A, %B)
 
 
 ; AndOrXor:135
-Name: and 1
+Name: AndOrXor 1
 %op = xor %X, C1
 %r = and %op, C2
   =>
@@ -55,7 +55,7 @@ Name: and 1
 
 
 ; AndOrXor:144
-Name: and 2
+Name: AndOrXor 2
 ;Pre: C1&C2 != C1  -- only for profitability
 %op = or %X, C1
 %r = and %op, C2
@@ -64,7 +64,7 @@ Name: and 2
 %r = and %o, C2
 
 ; AndOrXor:151
-Name: and 3
+Name: AndOrXor 3
 Pre: (C1 & C2) == C1
 ; && (C1 & C2) != 0  -- only for profitability
 %op = or %X, C1
@@ -75,7 +75,7 @@ Pre: (C1 & C2) == C1
 
 
 ; AndOrXor:210
-Name: and 4
+Name: AndOrXor 4
 Pre: C2 & (-1 << C1) != (-1 << C1) && C2 & (-1 << C1) != C2
 %op = shl %X, C1
 %r = and %op, C2
@@ -85,7 +85,7 @@ Pre: C2 & (-1 << C1) != (-1 << C1) && C2 & (-1 << C1) != C2
 
 
 ; AndOrXor:230
-Name: and 5
+Name: AndOrXor 5
 Pre: C2 & lshr(-1, C1) != lshr(-1, C1)
 ; && C2 & lshr(-1, C1) != C2 -- profitability only
 %op = lshr %X, C1
@@ -97,7 +97,7 @@ Pre: C2 & lshr(-1, C1) != lshr(-1, C1)
 
 
 ; AndOrXor:1146-1
-Name: and 6
+Name: AndOrXor 6
 Pre: MaskedValueIsZero(%op0RHS, ~C)
 %op0 = xor %op0LHS, %op0RHS
 %r = and %op0, C
@@ -106,7 +106,7 @@ Pre: MaskedValueIsZero(%op0RHS, ~C)
 %r = xor %newLHS, %op0RHS
 
 ; AndOrXor:1146-2
-Name: and 7
+Name: AndOrXor 7
 Pre: MaskedValueIsZero(%op0RHS, ~C)
 %op0 = or %op0LHS, %op0RHS
 %r = and %op0, C
@@ -116,7 +116,7 @@ Pre: MaskedValueIsZero(%op0RHS, ~C)
 
 
 ; AndOrXor:1175
-Name: and 8
+Name: AndOrXor 8
 Pre: MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))
 %lhs = sub %A, %B
 %r = and %lhs, C
@@ -127,7 +127,7 @@ Pre: MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))
 
 
 ; AndOrXor:1230  ~A & ~B -> ~(A | B)
-Name: and 9
+Name: AndOrXor 9
 %op0 = xor %notOp0, -1
 %op1 = xor %notOp1, -1
 %r = and %op0, %op1
@@ -138,7 +138,7 @@ Name: and 9
 
 
 ; AndOrXor:2052  (X & C1) | C2 --> (X | C2) & (C1|C2)
-Name: or 1
+Name: AndOrXor 10
 Pre: C & C1 != 0 ; @@ why? it's just as correct without
 %op0 = and %x, C1
 %r = or %op0, C
@@ -148,7 +148,7 @@ Pre: C & C1 != 0 ; @@ why? it's just as correct without
 
 
 ; AndOrXor:2095   (X^C)|Y -> (X|Y)^C iff Y&C == 0
-Name: or 2
+Name: AndOrXor 11
 Pre: MaskedValueIsZero(%op1, C1)
 %op0 = xor %A, C1
 %r = or %op0, %op1
@@ -158,7 +158,7 @@ Pre: MaskedValueIsZero(%op1, C1)
 
 
 ; AndOrXor:2247  (~A | ~B) == (~(A & B))
-Name: or 3
+Name: AndOrXor 12
 %na = xor %A, -1
 %nb = xor %B, -1
 %r = or %na, %nb
@@ -169,7 +169,7 @@ Name: or 3
 
 
 ; AndOrXor:2367
-Name: or 4
+Name: AndOrXor 13
 %op0 = or %A, C1
 %r = or %op0, %op1
   =>
@@ -178,7 +178,7 @@ Name: or 4
 
 
 ; AndOrXor:2429
-Name: xor 1
+Name: AndOrXor 14
 %op0 = and %x, %y
 %r = xor %op0, -1
   =>
@@ -188,7 +188,7 @@ Name: xor 1
 
 
 ; AndOrXor:2430
-Name: xor 2
+Name: AndOrXor 15
 %op0 = or %x, %y
 %r = xor %op0, -1
   =>
@@ -198,7 +198,7 @@ Name: xor 2
 
 
 ; AndOrXor:2587  (B&A)^A -> ~B & A
-Name: xor 3
+Name: AndOrXor 16
 %op0 = and %a, %op1
 %r = xor %op0, %op1
   =>
@@ -209,7 +209,7 @@ Name: xor 3
 
 
 ; simplifyValueKnownNonZero 2
-Name: udiv 1
+Name: MulDivRem 1
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = udiv %X, %Y
@@ -219,7 +219,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 3
-Name: udiv 2
+Name: MulDivRem 2
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = udiv %X, %Y
@@ -230,7 +230,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 5
-Name: sdiv 1
+Name: MulDivRem 3
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = sdiv %X, %Y
@@ -240,7 +240,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 6
-Name: sdiv 2
+Name: MulDivRem 4
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = sdiv %X, %Y
@@ -251,7 +251,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 8
-Name: urem 1
+Name: MulDivRem 5
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = urem %X, %Y
@@ -261,7 +261,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 9
-Name: urem 2
+Name: MulDivRem 6
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = urem %X, %Y
@@ -271,7 +271,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 11
-Name: srem 1
+Name: MulDivRem 7
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = lshr %A, %B
 %r = srem %X, %Y
@@ -281,7 +281,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; simplifyValueKnownNonZero 12
-Name: srem 2
+Name: MulDivRem 8
 Pre: isPowerOf2(%A) && hasOneUse(%Y)
 %Y = shl %A, %B
 %r = srem %X, %Y
@@ -291,7 +291,7 @@ Pre: isPowerOf2(%A) && hasOneUse(%Y)
 
 
 ; 201
-Name: mul 1
+Name: MulDivRem 9
 Pre: C < 0 && isPowerOf2(abs(C))
 %Op0 = sub %Y, %X
 %r = mul %Op0, C
@@ -301,7 +301,7 @@ Pre: C < 0 && isPowerOf2(abs(C))
 
 
 ; 203
-Name: mul 2
+Name: MulDivRem 10
 Pre: C < 0 && isPowerOf2(abs(C))
 %Op0 = add %Y, C1
 %r = mul %Op0, C
@@ -311,7 +311,7 @@ Pre: C < 0 && isPowerOf2(abs(C))
 
 
 ; Select:637
-Name: select 1
+Name: Select 1
 %c = icmp eq %X, C
 %r = select %c, %X, %Y
   =>
@@ -320,7 +320,7 @@ Name: select 1
 
 
 ; Select:641
-Name: select 2
+Name: Select 2
 %c = icmp ne %X, C
 %r = select %c, %Y, %X
   =>
@@ -329,7 +329,7 @@ Name: select 2
 
 
 ; InstCombineShift: 708
-Name: shl 1
+Name: Shift 1
 Pre: MaskedValueIsZero(%Op0, -1<<(width(C)-C))
 %r = shl %Op0, C
   =>
@@ -337,7 +337,7 @@ Pre: MaskedValueIsZero(%Op0, -1<<(width(C)-C))
 
 
 ; InstCombineShift: 717
-Name: shl 2
+Name: Shift 2
 Pre: ComputeNumSignBits(%Op0) > C
 %r = shl %Op0, C
   =>
@@ -345,7 +345,7 @@ Pre: ComputeNumSignBits(%Op0) > C
 
 
 ; InstCombineShift: 767
-Name: lshr 1
+Name: Shift 3
 Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
 %r = lshr %Op0, C
   =>
@@ -353,7 +353,7 @@ Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
 
 
 ; InstCombineShift: 812
-Name: ashr 1
+Name: Shift 4
 Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
 %r = ashr %Op0, C
   =>
