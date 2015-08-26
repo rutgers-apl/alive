@@ -1,0 +1,360 @@
+; AddSub:1334
+Name: add 1
+Pre: WillNotOverflowSignedAdd(%lhs, %rhs)
+%r = add %lhs, %rhs
+  =>
+%r = add nsw %lhs, %rhs
+
+
+; AddSub:1338
+Name: add 2
+Pre: WillNotOverflowUnsignedAdd(%lhs, %rhs)
+%r = add %lhs, %rhs
+  =>
+%r = add nuw %lhs, %rhs
+
+
+; AddSub:1539-2
+Name: sub 1
+%r = sub %x, C
+  =>
+%r = add %x, -C
+
+
+; AddSub:1549
+Name: sub 2
+Pre: C != 1 << (width(C)-1)
+%r = sub nsw %x, C
+  =>
+%r = add nsw %x, -C
+
+
+; AddSub:1693
+Name: sub 3
+Pre: WillNotOverflowSignedSub(%A, %B)
+%r = sub %A, %B
+  =>
+%r = sub nsw %A, %B
+
+
+; AddSub:1697
+Name: sub 4
+Pre: WillNotOverflowUnsignedSub(%A, %B)
+%r = sub %A, %B
+  =>
+%r = sub nuw %A, %B
+
+
+; AndOrXor:135
+Name: and 1
+%op = xor %X, C1
+%r = and %op, C2
+  =>
+%a = and %X, C2
+%r = xor %a, C1&C2
+
+
+; AndOrXor:144
+Name: and 2
+;Pre: C1&C2 != C1  -- only for profitability
+%op = or %X, C1
+%r = and %op, C2
+  =>
+%o = or %X, C1&C2
+%r = and %o, C2
+
+; AndOrXor:151
+Name: and 3
+Pre: (C1 & C2) == C1
+; && (C1 & C2) != 0  -- only for profitability
+%op = or %X, C1
+%r = and %op, C2
+  =>
+%a = and %X, C2^(C1&C2)
+%r = or %a, C1
+
+
+; AndOrXor:210
+Name: and 4
+Pre: C2 & (-1 << C1) != (-1 << C1) && C2 & (-1 << C1) != C2
+%op = shl %X, C1
+%r = and %op, C2
+  =>
+%op = shl %X, C1
+%r = and %op, C2 & (-1 << C1)
+
+
+; AndOrXor:230
+Name: and 5
+Pre: C2 & lshr(-1, C1) != lshr(-1, C1)
+; && C2 & lshr(-1, C1) != C2 -- profitability only
+%op = lshr %X, C1
+%r = and %op, C2
+  =>
+%op = lshr %X, C1
+%r = and %op, C2 & lshr(-1, C1)
+
+
+
+; AndOrXor:1146-1
+Name: and 6
+Pre: MaskedValueIsZero(%op0RHS, ~C)
+%op0 = xor %op0LHS, %op0RHS
+%r = and %op0, C
+  =>
+%newLHS = and %op0LHS, C
+%r = xor %newLHS, %op0RHS
+
+; AndOrXor:1146-2
+Name: and 7
+Pre: MaskedValueIsZero(%op0RHS, ~C)
+%op0 = or %op0LHS, %op0RHS
+%r = and %op0, C
+  =>
+%newLHS = and %op0LHS, C
+%r = or %newLHS, %op0RHS
+
+
+; AndOrXor:1175
+Name: and 8
+Pre: MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))
+%lhs = sub %A, %B
+%r = and %lhs, C
+  =>
+%neg = sub 0, %B
+%r = and %neg, C
+
+
+
+; AndOrXor:1230  ~A & ~B -> ~(A | B)
+Name: and 9
+%op0 = xor %notOp0, -1
+%op1 = xor %notOp1, -1
+%r = and %op0, %op1
+  =>
+%or = or %notOp0, %notOp1
+%r = xor %or, -1
+
+
+
+; AndOrXor:2052  (X & C1) | C2 --> (X | C2) & (C1|C2)
+Name: or 1
+Pre: C & C1 != 0 ; @@ why? it's just as correct without
+%op0 = and %x, C1
+%r = or %op0, C
+  =>
+%or = or %x, C
+%r = and %or, (C | C1)
+
+
+; AndOrXor:2095   (X^C)|Y -> (X|Y)^C iff Y&C == 0
+Name: or 2
+Pre: MaskedValueIsZero(%op1, C1)
+%op0 = xor %A, C1
+%r = or %op0, %op1
+  =>
+%or = or %A, %op1
+%r = xor %or, C1
+
+
+; AndOrXor:2247  (~A | ~B) == (~(A & B))
+Name: or 3
+%na = xor %A, -1
+%nb = xor %B, -1
+%r = or %na, %nb
+  =>
+%a = and %A, %B
+%r = xor %a, -1
+
+
+
+; AndOrXor:2367
+Name: or 4
+%op0 = or %A, C1
+%r = or %op0, %op1
+  =>
+%i = or %A, %op1
+%r = or %i, C1
+
+
+; AndOrXor:2429
+Name: xor 1
+%op0 = and %x, %y
+%r = xor %op0, -1
+  =>
+%nx = xor %x, -1
+%ny = xor %y, -1
+%r = or %nx, %ny
+
+
+; AndOrXor:2430
+Name: xor 2
+%op0 = or %x, %y
+%r = xor %op0, -1
+  =>
+%nx = xor %x, -1
+%ny = xor %y, -1
+%r = and %nx, %ny
+
+
+; AndOrXor:2587  (B&A)^A -> ~B & A
+Name: xor 3
+%op0 = and %a, %op1
+%r = xor %op0, %op1
+  =>
+%na = xor %a, -1
+%r = and %na, %op1
+
+
+
+
+; simplifyValueKnownNonZero 2
+Name: udiv 1
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = lshr %A, %B
+%r = udiv %X, %Y
+  =>
+%Y = lshr exact %A, %B
+%r = udiv %X, %Y
+
+
+; simplifyValueKnownNonZero 3
+Name: udiv 2
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = shl %A, %B
+%r = udiv %X, %Y
+  =>
+%Y = shl nuw %A, %B
+%r = udiv %X, %Y
+
+
+
+; simplifyValueKnownNonZero 5
+Name: sdiv 1
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = lshr %A, %B
+%r = sdiv %X, %Y
+  =>
+%Y = lshr exact %A, %B
+%r = sdiv %X, %Y
+
+
+; simplifyValueKnownNonZero 6
+Name: sdiv 2
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = shl %A, %B
+%r = sdiv %X, %Y
+  =>
+%Y = shl nuw %A, %B
+%r = sdiv %X, %Y
+
+
+
+; simplifyValueKnownNonZero 8
+Name: urem 1
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = lshr %A, %B
+%r = urem %X, %Y
+  =>
+%Y = lshr exact %A, %B
+%r = urem %X, %Y
+
+
+; simplifyValueKnownNonZero 9
+Name: urem 2
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = shl %A, %B
+%r = urem %X, %Y
+  =>
+%Y = shl nuw %A, %B
+%r = urem %X, %Y
+
+
+; simplifyValueKnownNonZero 11
+Name: srem 1
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = lshr %A, %B
+%r = srem %X, %Y
+  =>
+%Y = lshr exact %A, %B
+%r = srem %X, %Y
+
+
+; simplifyValueKnownNonZero 12
+Name: srem 2
+Pre: isPowerOf2(%A) && hasOneUse(%Y)
+%Y = shl %A, %B
+%r = srem %X, %Y
+  =>
+%Y = shl nuw %A, %B
+%r = srem %X, %Y
+
+
+; 201
+Name: mul 1
+Pre: C < 0 && isPowerOf2(abs(C))
+%Op0 = sub %Y, %X
+%r = mul %Op0, C
+  =>
+%sub = sub %X, %Y
+%r = mul %sub, abs(C)
+
+
+; 203
+Name: mul 2
+Pre: C < 0 && isPowerOf2(abs(C))
+%Op0 = add %Y, C1
+%r = mul %Op0, C
+  =>
+%sub = sub -C1, %Y
+%r = mul %sub, abs(C)
+
+
+; Select:637
+Name: select 1
+%c = icmp eq %X, C
+%r = select %c, %X, %Y
+  =>
+%c = icmp eq %X, C
+%r = select %c, C, %Y
+
+
+; Select:641
+Name: select 2
+%c = icmp ne %X, C
+%r = select %c, %Y, %X
+  =>
+%c = icmp ne %X, C
+%r = select %c, %Y, C
+
+
+; InstCombineShift: 708
+Name: shl 1
+Pre: MaskedValueIsZero(%Op0, -1<<(width(C)-C))
+%r = shl %Op0, C
+  =>
+%r = shl nuw %Op0, C
+
+
+; InstCombineShift: 717
+Name: shl 2
+Pre: ComputeNumSignBits(%Op0) > C
+%r = shl %Op0, C
+  =>
+%r = shl nsw %Op0, C
+
+
+; InstCombineShift: 767
+Name: lshr 1
+Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
+%r = lshr %Op0, C
+  =>
+%r = lshr exact %Op0, C
+
+
+; InstCombineShift: 812
+Name: ashr 1
+Pre: MaskedValueIsZero(%Op0, (1<<C)-1)
+%r = ashr %Op0, C
+  =>
+%r = ashr exact %Op0, C
