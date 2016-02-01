@@ -1,4 +1,4 @@
-# Copyright 2014 The ALIVe authors.
+# Copyright 2014-2015 The Alive authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 import copy, operator
 from common import *
+from codegen import CVariable, CFieldAccess
 
 
 def allTyEqual(vars, Ty):
@@ -22,6 +23,23 @@ def allTyEqual(vars, Ty):
     c += [vars[0].type == vars[i].type]
   return c
 
+def mkTyEqual(types):
+  return [types[0] == types[i] for i in range(1, len(types))]
+
+def create_mem_if_needed(ptr, val, state, qvars):
+    # if we are dealing with an arbitrary pointer, assume it points to something
+    # that can (arbitrarily) hold 7 elements.
+    if isinstance(val.type, PtrType):
+      block_size = val.type.getSize()
+    elif isinstance(val.type, UnknownType) and val.type.myType == Type.Ptr:
+      block_size = val.type.types[Type.Ptr].getSize()
+    else:
+      return
+
+    num_elems = 7
+    size = block_size * num_elems
+    mem = BitVec('mem_' + val.name, size)
+    state.addInputMem(ptr, mem, qvars, block_size, num_elems)
 
 
 class Type:
@@ -85,12 +103,14 @@ class UnknownType(Type):
 
   def ensureFirstClass(self):
     # Restrict to ints, pointers, FPs, vectors
-    del self.types[self.Array]
+    if self.Array in self.types:
+      del self.types[self.Array]
     return self
 
   def ensureIntPtrOrVector(self):
     # only ints, ptrs, or vectors of ints/ptrs
-    del self.types[self.Array]
+    if self.Array in self.types:
+      del self.types[self.Array]
     return self
 
   def setName(self, name):
@@ -129,7 +149,7 @@ class UnknownType(Type):
     return self.types[self.myType].getUnderlyingType()
 
   def fixupTypes(self, types):
-    self.myType = types.evaluate(self.typevar).as_long()
+    self.myType = types.get_interp(self.typevar).as_long()
     self.types[self.myType].fixupTypes(types)
 
   def __eq__(self, other):
@@ -249,7 +269,7 @@ class IntType(Type):
     return self.bitsvar
 
   def fixupTypes(self, types):
-    size = types.evaluate(self.bitsvar).as_long()
+    size = types.get_interp(self.bitsvar).as_long()
     assert self.defined == False or self.size == size
     self.size = size
 
@@ -286,10 +306,14 @@ class IntType(Type):
     return BoolVal(depth == 0)
 
   def getTypeConstraints(self):
-    # Integers are assumed to be up to 64 bits.
-    c = [self.typevar == Type.Int, self.bitsvar > 0, self.bitsvar <= 64]
+    c = [self.typevar == Type.Int]
     if self.defined:
       c += [self.bitsvar == self.getSize()]
+    else:
+      # Integers are assumed to be up to 64 bits.
+      # We bias towards 4/8 bits, as counterexamples become easier to understand
+      c += [Or(self.bitsvar == 8, self.bitsvar == 4,
+               And(self.bitsvar > 0, self.bitsvar <= 64))]
     return And(c)
 
 
@@ -340,17 +364,14 @@ class PtrType(Type):
     return BoolVal(False)
 
   def fixupTypes(self, types):
-    self.size = types.evaluate(Int('ptrsize')).as_long()
+    self.size = get_ptr_size()
     self.type.fixupTypes(types)
 
   def ensureTypeDepth(self, depth):
     return BoolVal(False) if depth == 0 else self.type.ensureTypeDepth(depth-1)
 
   def getTypeConstraints(self):
-    # Pointers are assumed to be either 32 or 64 bits
-    v = Int('ptrsize')
-    return And(Or(v == 32, v == 64),
-               self.typevar == Type.Ptr,
+    return And(self.typevar == Type.Ptr,
                self.type.getTypeConstraints())
 
 
@@ -415,32 +436,14 @@ class Value:
   def getUniqueName(self):
     return self.name
 
-  @staticmethod
-  def _mungeCName(name):
-    '''Translate an Alive variable name into a legal C equivalent.
-    
-    '.' and '_' become 'p_' and 'u_'. Temporaries starting with digits, 'C', or 'V'
-    gain a 'V' prefix.
-    '''
-    s = name.replace('_', 'u_').replace('.', 'p_')
-    
-    if s[0] == '%':
-      s = s[1:]
-      if s[0] in '0123456789CV':
-        s = 'V' + s
-
-    return s
-
-  def getCName(self):
-    return self._mungeCName(self.getName())
-
   def isConst(self):
     return False
 
   def setName(self, name):
     self.name = name
-    self.type = copy.deepcopy(self.type)
-    self.type.setName(name)
+    if hasattr(self, 'type'):
+      self.type = copy.deepcopy(self.type)
+      self.type.setName(name)
     for attr in dir(self):
       a = getattr(self, attr)
       if isinstance(a, TypeFixedValue):
@@ -480,6 +483,13 @@ class Value:
           if isinstance(e, (Type, Value)):
             e.fixupTypes(types)
 
+  def countUsers(self, m):
+    for attr in dir(self):
+      a = getattr(self, attr)
+      if isinstance(a, Value):
+        name = a.getUniqueName()
+        m[name] = m.get(name, 0) + 1
+
 
 ################################
 class TypeFixedValue(Value):
@@ -507,7 +517,7 @@ class TypeFixedValue(Value):
     assert isinstance(other, TypeFixedValue)
     return self.smtvar == other.smtvar
 
-  def toSMT(self, defined, state, qvars):
+  def toSMT(self, defined, poison, state, qvars):
     return self.val
 
   def getTypeConstraints(self):
@@ -532,7 +542,7 @@ class TypeFixedValue(Value):
 
   def fixupTypes(self, types):
     self.v.fixupTypes(types)
-    self.val = types.evaluate(self.smtvar).as_long()
+    self.val = types.get_interp(self.smtvar).as_long()
 
 
 ################################
@@ -545,19 +555,31 @@ class Input(Value):
   def __repr__(self):
     return self.getName()
 
-  def toSMT(self, defined, state, qvars):
-    ptr = BitVec(self.name, self.type.getSize())
-    # if we are dealing with an arbitrary pointer, assume it points to something
-    # that can (arbitrarily) hold 7 elements.
-    if isinstance(self.type, PtrType):
-      block_size = self.type.getSize()
-    elif isinstance(self.type, UnknownType) and\
-         (self.type.myType == Type.Ptr or self.type.myType == Type.Unknown):
-      block_size = self.type.types[Type.Ptr].getSize()
-    else:
-      return ptr
+  def toSMT(self, defined, poison, state, qvars):
+    v = BitVec(self.name, self.type.getSize())
+    create_mem_if_needed(v, self, state, [])
+    return v
 
-    num_elems = 7
-    mem = BitVec('mem_' + self.name, block_size * num_elems)
-    state.addAlloca(ptr, mem, (block_size, num_elems, 1))
-    return ptr
+  def register_types(self, manager):
+    if self.name[0] == 'C':
+      min = IntType()
+    else:
+      min = UnknownType()
+
+    manager.register_type(self, self.type, min)
+
+  def _ensure_constant(self):
+    name = self.getName()
+    if name[0] != 'C':
+      raise AliveError('Input {0} used in an expression'.format(name))
+
+  def get_APInt_or_u64(self, manager):
+    return self.get_APInt(manager)
+
+  def get_APInt(self, manager):
+    self._ensure_constant()
+    return manager.get_cexp(self).arr('getValue', [])
+
+  def get_Value(self, manager):
+    assert False
+    # this should have been called through the manager

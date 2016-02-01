@@ -1,0 +1,18 @@
+; expect 1 composition
+
+Name: AddSub:1063
+Pre: countTrailingZeros(C1) == 0 && C1 == C2+1
+%Y = and %Z, C2
+%LHS = xor %Y, C1
+%r = add %LHS, %RHS
+  =>
+%or = or %Z, ~C2
+%r = sub %RHS, %or
+
+Name: AndOrXor:2243  ((B | C) & A) | B -> B | (A & C)
+%o = or %B, %C
+%op0 = and %o, %A
+%r = or %op0, %B
+  =>
+%a = and %A, %C
+%r = or %B, %a

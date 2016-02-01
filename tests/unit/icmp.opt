@@ -1,3 +1,4 @@
+Name: icmp + zext
 %1 = icmp %n, %a
 %2 = zext %1 to i32
 %3 = icmp %n, %b
@@ -5,7 +6,33 @@
 %5 = or %2, %4
 %6 = icmp eq %5, 0
   =>
-%1 = icmp %n, %a
-%3 = icmp %n, %b
 %. = or %1, %3
 %6 = icmp eq %., 0
+
+
+Name: known branch
+entry:
+%0 = udiv %a, %b
+%1 = icmp ne 0, %0
+%2 = icmp ne 1, %0
+%3 = and %1, %2
+br %3, label %true, label %false
+true:
+%4 = icmp eq 0, %b
+false:
+ =>
+true:
+%4 = false
+
+
+Name: 2x icmp
+Pre: C1 u> C3 && C2 u> C3 && isPowerOf2(C1 ^ C2) && isPowerOf2(-C1 ^ -C2) && (-C1 ^ -C2) == ((C3-C1) ^ (C3-C2)) && abs(C1-C2) u> C3
+%x = add i37 %A, C1
+%i = icmp ult %x, C3
+%y = add %A, C2
+%j = icmp ult %y, C3
+%r = or %i, %j
+  =>
+%and = and %A, ~(C1^C2)
+%lhs = add %and, umax(C1,C2)
+%r = icmp ult %lhs, C3

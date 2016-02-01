@@ -1,0 +1,20 @@
+; expect 0 compositions
+; should reject
+Name: AndOrXor:144
+;Pre: C1&C2 != C1  -- only for profitability
+%op = or %X, C1
+%r = and %op, C2
+  =>
+%o = or %X, C1&C2
+%r = and %o, C2
+
+Name: AndOrXor:716
+%a1 = and %a, %b
+%a2 = and %a, %d
+%op0 = icmp eq %a1, %a
+%op1 = icmp eq %a2, %a
+%r = and %op0, %op1
+  =>
+%a4 = and %b, %d
+%a3 = and %a, %a4
+%r = icmp eq %a3, %a

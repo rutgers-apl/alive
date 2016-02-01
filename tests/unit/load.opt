@@ -1,4 +1,23 @@
+Name: load null
 %s = select %cond, null, %p
 %a = load %s
   =>
 %a = load %p
+
+
+Name: uninit read
+; FIXME: slow
+%p = alloca i9, 5
+store 3, %p
+%ptr = getelementptr %p, i64 1
+%val = load i9* %ptr
+  =>
+%p = alloca i9, 5
+store 3, %p
+%val = undef
+
+
+Name: unreach
+%v = load null
+  =>
+unreachable

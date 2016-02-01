@@ -1,4 +1,4 @@
-# Copyright 2014 The ALIVe authors.
+# Copyright 2014-2015 The Alive authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -62,15 +62,13 @@ def parseOperand(v, type):
     save_loc(loc)
 
   if isinstance(v, Value):
-    key = v.getUniqueName()
-    if not identifiers.has_key(key):
-      identifiers[key] = v
+    identifiers[v.getUniqueName()] = v
     return v
 
   # %var
   if v[0] == '%' or v[0] == 'C':
     if identifiers.has_key(v):
-      used_identifiers[v] = True
+      used_identifiers.add(v)
       return identifiers[v]
     if parsing_phase == Target:
       raise ParseError('Cannot declare new input variables or constants in '
@@ -102,6 +100,10 @@ def parseTypeOperand(toks):
 
 def parseIntOperand(toks):
   t = toks[0].ensureIntType()
+  return [t, parseOperand(toks[1], t)]
+
+def parseBoolOperand(toks):
+  t = toks[0].ensureIntType(1)
   return [t, parseOperand(toks[1], t)]
 
 def parsePtrOperand(toks):
@@ -139,9 +141,8 @@ def parseIcmp(toks):
   return Icmp(toks[1], toks[2], toks[3], parseOperand(toks[4], toks[2]))
 
 def parseSelect(toks):
-  t = getMostSpecificType(toks[2], toks[4])
-  return Select(t, parseOperand(toks[1], IntType(1)),
-                parseOperand(toks[3], t), parseOperand(toks[5], t))
+  t = getMostSpecificType(toks[3], toks[5])
+  return Select(t, toks[2], parseOperand(toks[4], t), parseOperand(toks[6], t))
 
 def parseOptionalNumElems(loc, toks):
   t = IntType()
@@ -164,21 +165,60 @@ def parseOperandInstr(toks):
   return CopyOperand(op, toks[0])
 
 def parseStore(toks):
-  global identifiers
+  global identifiers, BBs
   s = Store(toks[1], toks[2], toks[3], toks[4], toks[5])
   identifiers[s.getUniqueName()] = s
+  BBs[bb_label][s.getUniqueName()] = s
+
+def parseSkip(toks):
+  global identifiers, BBs
+  s = Skip()
+  identifiers[s.getUniqueName()] = s
+  BBs[bb_label][s.getUniqueName()] = s
+
+def parseUnreachable(toks):
+  global identifiers, BBs
+  u = Unreachable()
+  identifiers[u.getUniqueName()] = u
+  BBs[bb_label][u.getUniqueName()] = u
+
+def parseBBLabel(toks):
+  if toks[0] in used_bb_labels:
+    raise ParseError('Redefinition of BB label')
+  global BBs, bb_label
+  bb_label = toks[0]
+  BBs[bb_label] = collections.OrderedDict()
+  used_bb_labels.add(bb_label)
+
+def parseBr(toks):
+  global identifiers, BBs
+  s = Br(bb_label, toks[2], toks[3], toks[4])
+  identifiers[s.getUniqueName()] = s
+  BBs[bb_label][s.getUniqueName()] = s
+
+def parseRet(toks):
+  global identifiers, BBs
+  s = Ret(bb_label, toks[1], toks[2])
+  identifiers[s.getUniqueName()] = s
+  BBs[bb_label][s.getUniqueName()] = s
 
 
 def parseInstr(toks):
-  global identifiers
+  global identifiers, skip_identifiers, BBs
 
   reg = toks[0]
   if identifiers.has_key(reg):
-    raise ParseError('Redefinition of register')
+    if reg in skip_identifiers:
+      skip_identifiers.remove(reg)
+      for instrs in BBs.itervalues():
+        instrs.pop(reg, None)
+      identifiers.pop(reg, None)
+    else:
+      raise ParseError('Redefinition of register')
 
   toks[1].setName(reg)
   identifiers[reg] = toks[1]
-  return
+  BBs[bb_label][reg] = toks[1]
 
 
 ################################
@@ -202,7 +242,7 @@ def parseCnstVar(v):
     raise ParseError('Only constants allowed in expressions')
 
   if identifiers.has_key(id):
-    used_identifiers[id] = True
+    used_identifiers.add(id)
     return identifiers[id]
 
   if parsing_phase == Pre:
@@ -244,17 +284,18 @@ identifier = Word(srange("[a-zA-Z0-9_.]"))
 comma = Suppress(',')
 pred_args = Forward()
 
-cnst_expr_atoms = (identifier + Suppress('(') + pred_args + Suppress(')')).\
+cnst_expr_atoms = (identifier + Suppress('(') + pred_args + Suppress(')') +\
+                   ~oneOf('&& ||')).\
                     setParseAction(pa(parseCnstFunction)) |\
                   Regex(r"C\d*|(?:-\s*)?\d+|%[a-zA-Z0-9_.]+") |\
-                  oneOf('false true undef null')
+                  oneOf('false true null')
 cnst_expr_atoms = locatedExpr(cnst_expr_atoms)
 
 cnst_expr = infixNotation(cnst_expr_atoms,
                           [(Regex(r"~|-(?!\s*\d)"), 1, opAssoc.RIGHT, parseUnaryPred),
-                           (oneOf('* /'), 2, opAssoc.LEFT, parseBinaryPred),
+                           (oneOf('* / % /u %u'), 2, opAssoc.LEFT, parseBinaryPred),
                            (oneOf('+ -'), 2, opAssoc.LEFT, parseBinaryPred),
-                           (oneOf('<< >>'), 2, opAssoc.LEFT, parseBinaryPred),
+                           (oneOf('<< >> u>>'), 2, opAssoc.LEFT, parseBinaryPred),
                            (Literal('&'), 2, opAssoc.LEFT, parseBinaryPred),
                            (Literal('^'), 2, opAssoc.LEFT, parseBinaryPred),
                            (Literal('|'), 2, opAssoc.LEFT, parseBinaryPred),
@@ -281,13 +322,15 @@ type <<= (Literal('i') + posnum + ZeroOrMore(Literal('*'))).\
            setParseAction(pa(parseNamedType))
 
 opttype = Optional(type).setParseAction(pa(parseOptType))
+i1 = Optional('i1').setParseAction(lambda toks : IntType(1))
 
 flags = ZeroOrMore(Literal('nsw') | Literal('nuw') | Literal('exact')).\
         setParseAction(pa(lambda toks : [toks]))
-operand = cnst_expr 
+operand = cnst_expr | Literal('undef')
 
 typeoperand = (opttype + operand).setParseAction(pa(parseTypeOperand))
 intoperand  = (opttype + operand).setParseAction(pa(parseIntOperand))
+booloperand = (i1 + operand).setParseAction(pa(parseBoolOperand))
 ptroperand  = (opttype + operand).setParseAction(pa(parsePtrOperand))
 
 binop = (opname + flags + opttype + operand + comma + operand).\
@@ -303,7 +346,7 @@ optionalname = Optional(identifier).setParseAction(pa(parseOptional('')))
 icmp = (Literal('icmp') + optionalname + typeoperand + comma + operand).\
          setParseAction(pa(parseIcmp))
 
-select = (Literal('select') + Suppress(Optional('i1')) + operand +\
+select = (Literal('select') + booloperand +\
           comma + opttype + operand + comma + opttype + operand).\
             setParseAction(pa(parseSelect))
 
@@ -327,8 +370,20 @@ op = operandinstr | icmp | select | alloca | gep | load | binop | conversionop
 store = (Literal('store') + typeoperand + comma + ptroperand +\
          optalign).setParseAction(pa(parseStore))
 
+unreachable = Literal('unreachable').setParseAction(pa(parseUnreachable))
+
+newBB = (identifier + Suppress(':')).setParseAction(pa(parseBBLabel))
+
+label = Suppress('label') + reg
+br = (Literal('br') + booloperand + comma + label + comma + label).\
+       setParseAction(pa(parseBr))
+
+ret = (Literal('ret') + typeoperand).setParseAction(pa(parseRet))
+
+skip = Suppress('skip').setParseAction(pa(parseSkip))
+
 instr = (reg + Suppress('=') + op).setParseAction(pa(parseInstr)) |\
-        store | comment
+        store | unreachable | newBB | br | ret | skip | comment
 
 instrc = instr + Optional(comment)
 prog = instrc + ZeroOrMore(Suppress(OneOrMore(LineEnd())) + instrc) +\
@@ -336,18 +391,37 @@ prog = instrc + ZeroOrMore(Suppress(OneOrMore(LineEnd())) + instrc) +\
 
 
 def parse_llvm(txt):
-  global identifiers, used_identifiers
-  used_identifiers = {}
+  global identifiers, skip_identifiers, used_identifiers
+  global used_bb_labels, BBs, bb_label
+  used_identifiers = set([])
+  skip_identifiers = set([])
+  used_bb_labels = set([])
+  bb_label = ""
+
   if parsing_phase == Target:
-    old_ids = identifiers
+    # Ensure regs defined in source are available in the target.
+    identifiers_old = identifiers
     identifiers = collections.OrderedDict()
-    for name, val in old_ids.iteritems():
-      if isinstance(val, Input):
-        identifiers[name] = val
+    for k,v in identifiers_old.iteritems():
+      if not isinstance(v, (Store, Unreachable)):
+        identifiers[k] = v
+
+    BBs_old = BBs
+    BBs = collections.OrderedDict()
+    for bb, instrs in BBs_old.iteritems():
+      BBs[bb] = collections.OrderedDict()
+      for k,v in instrs.iteritems():
+        if not isinstance(v, (Store, Unreachable)):
+          BBs[bb][k] = v
+    for i,v in identifiers.iteritems():
+      if not isinstance(v, Input):
+        skip_identifiers.add(i)
   else:
     identifiers = collections.OrderedDict()
+    BBs = collections.OrderedDict()
+    BBs[bb_label] = collections.OrderedDict()
   prog.parseString(txt)
-  return identifiers, used_identifiers
+  return BBs, identifiers, used_identifiers, skip_identifiers
 
 
 ##########################
@@ -388,11 +462,14 @@ def parsePreOr(toks):
 
 
 ParserElement.DEFAULT_WHITE_CHARS = " \n\t\r"
-pre_bool_expr = (cnst_expr + OneOrMore(oneOf('== != < <= > >=') + cnst_expr)).\
+pre_bool_expr = (cnst_expr +\
+                  OneOrMore(Combine(Optional('u') + oneOf('== != < <= > >=')) +\
+                    cnst_expr)).\
                   setParseAction(pa(parseBoolPred))
 
-predicate = (identifier + Suppress('(') + pred_args + Suppress(')')).\
-              setParseAction(pa(parseBoolPredicate)) |\
+predicate = (identifier + Suppress('(') + pred_args + Suppress(')') +\
+              FollowedBy(oneOf('&& || )') | comment | LineEnd())).\
+                setParseAction(pa(parseBoolPredicate)) |\
             Literal('true').setParseAction(pa(lambda toks: TruePred())) |\
             pre_bool_expr
 
@@ -447,16 +524,27 @@ def _parseOpt(s, loc, toks):
 
   parsing_phase = Source
   save_parse_str(src, src_line)
-  src, used = parse_llvm(src)
+  src, ident_src, used_src, _ = parse_llvm(src)
 
   parsing_phase = Target
   save_parse_str(tgt, tgt_line)
-  tgt, used = parse_llvm(tgt)
+  tgt, ident_tgt, used_tgt, skip_tgt = parse_llvm(tgt)
+
+  # Move unused target instrs (copied from source) to the end.
+  lst = []
+  for bb, instrs in tgt.iteritems():
+    lst = []
+    for k,v in instrs.iteritems():
+      if k not in used_tgt and not isinstance(v, Constant):
+        lst.append((k,v))
+        del instrs[k]
+    for k,v in lst:
+      tgt[bb][k] = v
 
   parsing_phase = Pre
   save_parse_str(pre, pre_line)
-  pre = parse_pre(pre, src)
-  return name, pre, src, tgt, used
+  pre = parse_pre(pre, ident_src)
+  return name, pre, src, tgt, ident_src, ident_tgt, used_src, used_tgt, skip_tgt
 
 def parseOpt(s, loc, toks):
   try:

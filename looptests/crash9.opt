@@ -1,0 +1,24 @@
+; expect 0 compositions
+Name: (AddSub:1098;Select:699@%umax)
+Pre: true
+  %b1 = add %b, 1
+  %c = icmp uge %b1, %b
+  %ax = zext i1 %c
+  %c1 = add %ax, %b
+  %c2 = icmp uge %c1, %b
+  %umax2 = select i1 %c2, %c1, %b
+=>
+  %c3 = icmp uge %b1, %b
+  %umax2 = select i1 %c3, %b1, %b
+
+Name: (AddSub:1098;Select:699@%umax)
+Pre: true
+  %b1 = add %b, 1
+  %c = icmp uge %b1, %b
+  %ax = zext i1 %c
+  %c1 = add %ax, %b
+  %c2 = icmp uge %c1, %b
+  %umax2 = select i1 %c2, %c1, %b
+=>
+  %c3 = icmp uge %b1, %b
+  %umax2 = select i1 %c3, %b1, %b

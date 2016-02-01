@@ -1,0 +1,50 @@
+; expect 3 compositions
+Name: AndOrXor:1346 (sext)
+%op0 = sext %x
+%op1 = sext %y
+%r = and %op0, %op1
+  =>
+%0 = and %x, %y
+%r = sext %0
+
+Name: (AndOrXor:1346 (sext);AndOrXor:1388@%op0)
+Pre: true
+  %op0 = sext %x
+  %op1 = sext %y
+  %r = and %op0, %op1
+  %r1 = and %r, %b
+=>
+  %0 = and %x, %y
+  %r1 = select i1 %0, %b, 0
+
+; ame: AndOrXor:1346 (sext)@%0;(AndOrXor:1346 (sext);AndOrXor:1388@%op0)
+;   %op0 = sext %x
+;   %op1 = sext %y
+;   %r = and %op0, %op1
+;   %op01 = sext %r
+;   %op11 = sext %y1
+;   %r1 = and %op01, %op11
+; =>
+;   %0 = and %x, %y
+;   %r11 = select i1 %0, %y1, 0
+;   %r1 = sext %r11
+; 
+; ame: ((AndOrXor:1346 (sext)@%0;(AndOrXor:1346 (sext);AndOrXor:1388@%op0))@%0;(AndOrXor:1346 (sext)@%0;(AndOrXor:1346 (sext);AndOrXor:1388@%op0)))
+; Pre: true
+;   %op0 = sext %x
+;   %op1 = sext %y
+;   %r = and %op0, %op1
+;   %op01 = sext %r
+;   %op02 = sext %op01
+;   %op11 = sext %y1
+;   %op12 = sext %op11
+;   %r1 = and %op02, %op12
+;   %op011 = sext %r1
+;   %op111 = sext %y11
+;   %r11 = and %op011, %op111
+; =>
+;   %0 = and %x, %y
+;   %r111 = select i1 %0, %y1, 0
+;   %r12 = sext %r111
+;   %r112 = select i1 %r12, %y11, 0
+;   %r11 = sext %r112

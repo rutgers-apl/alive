@@ -1,0 +1,8 @@
+; expect 0 loops
+Name: AndOrXor:230
+Pre: (C2 & lshr(-1, C1) != lshr(-1, C1)) && C2 & lshr(-1, C1) != C2
+; -- profitability only
+%op = lshr %X, C1
+%r = and %op, C2
+  =>
+%r = and %op, C2 & lshr(-1, C1)

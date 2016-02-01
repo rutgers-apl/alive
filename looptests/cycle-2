@@ -1,0 +1,16 @@
+; expect 1 loop
+Name: AndOrXor:2430
+%op0 = or %x, %y
+%r = xor %op0, -1
+  =>
+%nx = xor %x, -1
+%ny = xor %y, -1
+%r = and %nx, %ny
+
+Name: AndOrXor:1230  ~A & ~B -> ~(A | B)
+%op0 = xor %notOp0, -1
+%op1 = xor %notOp1, -1
+%r = and %op0, %op1
+  =>
+%or = or %notOp0, %notOp1
+%r = xor %or, -1

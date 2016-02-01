@@ -1,0 +1,66 @@
+; expect 0 loops
+Name: AndOrXor:144
+;Pre: C1&C2 != C1  -- only for profitability
+%op = or %X, C1
+%r = and %op, C2
+  =>
+%o = or %X, C1&C2
+%r = and %o, C2
+
+Name: AndOrXor:151
+Pre: (C1 & C2) == C1
+; && (C1 & C2) != 0  -- only for profitability
+%op = or %X, C1
+%r = and %op, C2
+  =>
+%a = and %X, C2^(C1&C2)
+%r = or %a, C1
+
+Name: AndOrXor:1146-2
+Pre: MaskedValueIsZero(%op0RHS, ~C)
+%op0 = or %op0LHS, %op0RHS
+%r = and %op0, C
+  =>
+%newLHS = and %op0LHS, C
+%r = or %newLHS, %op0RHS
+
+Name: AndOrXor:2113
+%negA = xor %A, -1
+%op0 = and %negA, %B
+%r = or %op0, %A
+  =>
+%r = or %A, %B
+
+
+
+; ame: (((AndOrXor:144;AndOrXor:151)@%a;AndOrXor:1146-2)@%r1;AndOrXor:2113   ((~A & B) | A) -> (A | B))
+; Pre: ((((C1 & C2) & C2) == (C1 & C2)) && MaskedValueIsZero(%op0RHS, ~(C2 ^ ((C1 & C2) & C2))))
+;   %negA = xor %op0RHS, -1
+;   %op0 = or %negA, %op0RHS
+;   %op = or %op0, C1
+;   %r = and %op, C2
+; =>
+;   %r1 = or %op0RHS, (C2 ^ ((C1 & C2) & C2))
+;   %r = or %r1, (C1 & C2)
+; ;
+; ame: (((AndOrXor:144;AndOrXor:151)@%a;AndOrXor:1146-2)@%r1;AndOrXor:2113   ((~A & B) | A) -> (A | B))
+; Pre: ((((C1 & C2) & C2) == (C1 & C2)) && MaskedValueIsZero(%op0RHS, ~(C2 ^ ((C1 & C2) & C2))))
+;   %negA = xor %op0RHS, -1
+;   %op0 = or %negA, %op0RHS
+;   %op = or %op0, C1
+;   %r = and %op, C2
+; =>
+;   %r1 = or %op0RHS, (C2 ^ ((C1 & C2) & C2))
+;   %r = or %r1, (C1 & C2)
+; 
+; ame: ((((AndOrXor:144;AndOrXor:151)@%a;AndOrXor:1146-2)@%r1;AndOrXor:2113   ((~A & B) | A) -> (A | B));(((AndOrXor:144;AndOrXor:151)@%a;AndOrXor:1146-2)@%r1;AndOrXor:2113   ((~A & B) | A) -> (A | B))@%op)
+; Pre: (((C01 & C2) == C01) && MaskedValueIsZero(%negA, ~C0) && (((C01 & C21) & C21) == (C01 & C21)) && MaskedValueIsZero(C0, ~(C21 ^ ((C01 & C21) & C21))) && (C0 == (C2 ^ (C01 & C2))) && (C01 == (C1 & C2)))
+;   %negA = xor C0, -1
+;   %negA1 = xor %negA, -1
+;   %op0 = or %negA1, %negA
+;   %op = or %op0, C1
+;   %r = and %op, C2
+;   %r1 = and %r, C21
+; =>
+;   %r11 = or C0, (C21 ^ ((C01 & C21) & C21))
+;   %r1 = or %r11, (C01 & C21)

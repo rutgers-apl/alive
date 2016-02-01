@@ -1,0 +1,19 @@
+; expect 0 compositions
+; no match
+; avoid circular reference
+
+Name: AddSub:1098
+%ax = zext i1 %a
+%c = add %ax, %b
+  =>
+%b1 = add %b, 1
+%c = select %a, %b1, %b
+
+Name: Select:962
+; FIXME: valid for any binop
+%s1 = add %x, %y
+%s2 = add %x, %z
+%r = select %c, %s1, %s2
+  =>
+%yz = select %c, %y, %z
+%r = add %x, %yz

@@ -1,4 +1,4 @@
-# Copyright 2014 The ALIVe authors.
+# Copyright 2014-2015 The Alive authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from value import *
+from codegen import *
 
 
 class Constant(Value):
@@ -23,9 +24,16 @@ class Constant(Value):
 
   def getUniqueName(self):
     return self.getName() + '_' + self.id
-  
-  def getCName(self):
-    raise AliveError('Called getCName on constant {}'.format(self.getUniqueName()))
+
+  def get_APInt(self, manager):
+    return CFunctionCall('APInt',
+      manager.get_llvm_type(self).arr('getScalarSizeInBits', []), #TODO: add to manager API?
+      self.get_APInt_or_u64(manager))
+
+  def get_Value(self, manager):
+    return CFunctionCall('ConstantInt::get',
+      manager.get_llvm_type(self),
+      self.get_APInt_or_u64(manager))
 
 
 ################################
@@ -55,9 +63,17 @@ class ConstantVal(Constant):
       return And(c, self.type >= bits)
     return c
 
-  def toSMT(self, defined, state, qvars):
+  def toSMT(self, defined, poison, state, qvars):
     return BitVecVal(self.val, self.type.getSize())
 
+  def register_types(self, manager):
+    if isinstance(self.type, PtrType):
+      manager.register_type(self, self.type, PtrType())
+    else:
+      manager.register_type(self, self.type, IntType())
+
+  def get_APInt_or_u64(self, manager):
+    return CVariable(str(self.val))
 
 ################################
 class UndefVal(Constant):
@@ -73,11 +89,20 @@ class UndefVal(Constant):
     # overload Constant's method
     return self.type.getTypeConstraints()
 
-  def toSMT(self, defined, state, qvars):
+  def toSMT(self, defined, poison, state, qvars):
     v = BitVec('undef' + self.id, self.type.getSize())
     qvars += [v]
+    create_mem_if_needed(v, self, state, [v])
     return v
 
+  def register_types(self, manager):
+    manager.register_type(self, self.type, UnknownType())
+
+  def get_APInt_or_u64(self, manager):
+    raise AliveError('undef cannot be an APInt')
+
+  def get_Value(self, manager):
+    return CFunctionCall('UndefValue::get', manager.get_llvm_type(self))
 
 ################################
 class CnstUnaryOp(Constant):
@@ -111,18 +136,31 @@ class CnstUnaryOp(Constant):
                    self.v.getTypeConstraints(),
                    self.type.getTypeConstraints()])
 
-  def toSMT(self, defined, state, qvars):
+  def toSMT(self, defined, poison, state, qvars):
+    v = self.v.toSMT(defined, poison, state, qvars)
     return {
       self.Not: lambda a: ~a,
       self.Neg: lambda a: -a,
-    }[self.op](self.v.toSMT(defined, state, qvars))
+    }[self.op](v)
+
+  def register_types(self, manager):
+    self.v.register_types(manager)
+    manager.register_type(self, self.type, IntType())
+    manager.unify(self, self.v)
+
+  def get_APInt_or_u64(self, manager):
+    return CUnaryExpr(self.opnames[self.op], self.v.get_APInt_or_u64(manager))
+
+  def get_APInt(self, manager):
+    return CUnaryExpr(self.opnames[self.op], self.v.get_APInt(manager))
 
 
 ################################
 class CnstBinaryOp(Constant):
-  And, Or, Xor, Add, Sub, Mul, Div, Rem, Shr, Shl, Last = range(11)
+  And, Or, Xor, Add, Sub, Mul, Div, DivU, Rem, RemU, AShr, LShr, Shl,\
+  Last = range(14)
 
-  opnames = ['&', '|', '^', '+', '-', '*', '/', '%', '>>', '<<']
+  opnames = ['&', '|', '^', '+', '-', '*', '/', '/u', '%', '%u','>>','u>>','<<']
 
   def __init__(self, op, v1, v2):
     assert 0 <= op < self.Last
@@ -151,48 +189,106 @@ class CnstBinaryOp(Constant):
                    self.v2.getTypeConstraints(),
                    self.type.getTypeConstraints()])
 
-  def toSMT(self, defined, state, qvars):
-    v1 = self.v1.toSMT(defined, state, qvars)
-    v2 = self.v2.toSMT(defined, state, qvars)
+  def toSMT(self, defined, poison, state, qvars):
+    v1 = self.v1.toSMT(defined, poison, state, qvars)
+    v2 = self.v2.toSMT(defined, poison, state, qvars)
     return {
-      self.And: lambda a,b: a & b,
-      self.Or:  lambda a,b: a | b,
-      self.Xor: lambda a,b: a ^ b,
-      self.Add: lambda a,b: a + b,
-      self.Sub: lambda a,b: a - b,
-      self.Mul: lambda a,b: a * b,
-      self.Div: lambda a,b: a / b,
-      self.Rem: lambda a,b: SRem(a, b),
-      self.Shr: lambda a,b: a >> b,
-      self.Shl: lambda a,b: a << b,
+      self.And:  lambda a,b: a & b,
+      self.Or:   lambda a,b: a | b,
+      self.Xor:  lambda a,b: a ^ b,
+      self.Add:  lambda a,b: a + b,
+      self.Sub:  lambda a,b: a - b,
+      self.Mul:  lambda a,b: a * b,
+      self.Div:  lambda a,b: a / b,
+      self.DivU: lambda a,b: UDiv(a, b),
+      self.Rem:  lambda a,b: SRem(a, b),
+      self.RemU: lambda a,b: URem(a, b),
+      self.AShr: lambda a,b: a >> b,
+      self.LShr: lambda a,b: LShR(a, b),
+      self.Shl:  lambda a,b: a << b,
     }[self.op](v1, v2)
+
+  def register_types(self, manager):
+    self.v1.register_types(manager)
+    self.v2.register_types(manager)
+    manager.register_type(self, self.type, IntType())
+    manager.unify(self, self.v1, self.v2)
+
+  def get_APInt_or_u64(self, manager):
+    return self.get_APInt(manager)
+
+  _cfun = {
+      And:  lambda a,b: CBinExpr('&', a, b),
+      Or:   lambda a,b: CBinExpr('|', a, b),
+      Xor:  lambda a,b: CBinExpr('^', a, b),
+      Add:  lambda a,b: CBinExpr('+', a, b),
+      Sub:  lambda a,b: CBinExpr('-', a, b),
+      Mul:  lambda a,b: CBinExpr('*', a, b),
+      Div:  lambda a,b: a.dot('sdiv', [b]),
+      DivU: lambda a,b: a.dot('udiv', [b]),
+      Rem:  lambda a,b: a.dot('srem', [b]),
+      RemU: lambda a,b: a.dot('urem', [b]),
+      AShr: lambda a,b: a.dot('ashr', [b]),
+      LShr: lambda a,b: a.dot('lshr', [b]),
+      Shl:  lambda a,b: CBinExpr('<<', a,  b),
+    }
+
+  _overloaded_rhs = {Add, Sub, AShr, LShr, Shl}
+
+  def get_APInt(self, manager):
+    op = CnstBinaryOp._cfun[self.op]
+
+    if self.op in CnstBinaryOp._overloaded_rhs:
+      return op(self.v1.get_APInt(manager), self.v2.get_APInt_or_u64(manager))
+
+    return op(self.v1.get_APInt(manager), self.v2.get_APInt(manager))
 
 
 ################################
 class CnstFunction(Constant):
-  abs, lshr, trunc, umax, width, Last = range(6)
+  abs, sbits, obits, zbits, ctlz, cttz, log2, lshr, max, sext, trunc, umax,\
+  width, zext, Last = range(15)
 
   opnames = {
     abs:   'abs',
+    sbits: 'ComputeNumSignBits',
+    obits: 'computeKnownOneBits',
+    zbits: 'computeKnownZeroBits',
+    ctlz:  'countLeadingZeros',
+    cttz:  'countTrailingZeros',
+    log2:  'log2',
     lshr:  'lshr',
+    max:   'max',
+    sext:  'sext',
     trunc: 'trunc',
     umax:  'umax',
     width: 'width',
+    zext:  'zext',
   }
   opids = {v:k for k,v in opnames.items()}
 
   num_args = {
     abs:   1,
+    sbits: 1,
+    obits: 1,
+    zbits: 1,
+    ctlz:  1,
+    cttz:  1,
+    log2:  1,
     lshr:  2,
+    max:   2,
+    sext:  1,
     trunc: 1,
     umax:  2,
     width: 1,
+    zext:  1,
   }
 
   def __init__(self, op, args, type):
     assert 0 <= op < self.Last
     for a in args:
       assert isinstance(a, Value)
+    assert isinstance(type, IntType)
 
     self.op = op
     self.args = args
@@ -218,22 +314,130 @@ class CnstFunction(Constant):
 
   def getTypeConstraints(self):
     c = {
-      self.abs:   lambda a: allTyEqual([a], Type.Int),
-      self.lshr:  lambda a,b: allTyEqual([a,b], Type.Int),
+      self.abs:   lambda a: allTyEqual([a,self], Type.Int),
+      self.sbits: lambda a: allTyEqual([a], Type.Int),
+      self.obits: lambda a: allTyEqual([a,self], Type.Int),
+      self.zbits: lambda a: allTyEqual([a,self], Type.Int),
+      self.ctlz:  lambda a: allTyEqual([a], Type.Int),
+      self.cttz:  lambda a: allTyEqual([a], Type.Int),
+      self.log2:  lambda a: allTyEqual([a], Type.Int),
+      self.lshr:  lambda a,b: allTyEqual([a,b,self], Type.Int),
+      self.max:   lambda a,b: allTyEqual([a,b,self], Type.Int),
+      self.sext:  lambda a: [a.type < self.type],
       self.trunc: lambda a: [self.type < a.type],
-      self.umax:  lambda a,b: allTyEqual([a,b], Type.Int),
+      self.umax:  lambda a,b: allTyEqual([a,b,self], Type.Int),
       self.width: lambda a: [],
+      self.zext:  lambda a: [self.type > a.type],
     }[self.op](*self.args)
 
     return mk_and([v.getTypeConstraints() for v in self.args] +\
                   [self.type.getTypeConstraints()] + c)
 
-  def toSMT(self, defined, state, qvars):
-    args = [v.toSMT(defined, state, qvars) for v in self.args]
-    return {
-      self.abs:   lambda a: If(a >= 0, a, -a),
-      self.lshr:  lambda a,b: LShR(a,b),
-      self.trunc: lambda a: Extract(self.type.getSize()-1, 0, a),
-      self.umax:  lambda a,b: If(UGT(a,b), a, b),
-      self.width: lambda a: BitVecVal(a.sort().size(), self.type.getSize()),
+  def toSMT(self, defined, poison, state, qvars):
+    size = self.type.getSize()
+    args = []
+    for v in self.args:
+      a = v.toSMT(defined, poison, state, qvars)
+      args.append(a)
+
+    d, v = {
+      self.abs:   lambda a: ([], If(a >= 0, a, -a)),
+      self.sbits: lambda a:
+        (lambda b: ([ULE(b, ComputeNumSignBits(a, size))], b))
+          (ComputeNumSignBits(BitVec('ana_' + self.getName(), size), size)),
+      self.obits: lambda a: (lambda b: ([b & ~a == 0], b))
+                              (BitVec('ana_' + self.getName(), size)),
+      self.zbits: lambda a: (lambda b: ([b & a == 0], b))
+                              (BitVec('ana_' + self.getName(), size)),
+      self.ctlz:  lambda a: ([], ctlz(a, size)),
+      self.cttz:  lambda a: ([], cttz(a, size)),
+      self.log2:  lambda a: ([], bv_log2(a, size)),
+      self.lshr:  lambda a,b: ([], LShR(a, b)),
+      self.max:   lambda a,b: ([], If(a > b, a, b)),
+      self.sext:  lambda a: ([], SignExt(size - a.size(), a)),
+      self.trunc: lambda a: ([], Extract(size-1, 0, a)),
+      self.umax:  lambda a,b: ([], If(UGT(a,b), a, b)),
+      self.width: lambda a: (None, BitVecVal(a.size(), size)),
+      self.zext:  lambda a: ([], ZeroExt(size - a.size(), a)),
     }[self.op](*args)
+
+    if d is None:
+      del defined[:]
+    else:
+      defined += d
+    return v
+
+  def register_types(self, manager):
+    for arg in self.args:
+      arg.register_types(manager)
+
+    manager.register_type(self, self.type, IntType())
+
+    if self.op in {CnstFunction.abs, CnstFunction.obits, CnstFunction.zbits}:
+      manager.unify(self, self.args[0])
+
+    elif self.op in {CnstFunction.lshr, CnstFunction.max, CnstFunction.umax}:
+      manager.unify(self, self.args[0], self.args[1])
+
+  def _get_cexp(self, manager):
+    if self.op == CnstFunction.abs:
+      return False, self.args[0].get_APInt(manager).dot('abs', [])
+
+    if self.op == CnstFunction.sbits:
+      return True, CFunctionCall('ComputeNumSignBits', manager.get_cexp(self.args[0]))
+
+    if self.op == CnstFunction.obits:
+      return False, CFunctionCall('computeKnownOneBits', manager.get_cexp(self.args[0]))
+
+    if self.op == CnstFunction.zbits:
+      return False, CFunctionCall('computeKnownZeroBits', manager.get_cexp(self.args[0]))
+
+    if self.op == CnstFunction.ctlz:
+      return True, self.args[0].get_APInt(manager).dot('countLeadingZeros', [])
+
+    if self.op == CnstFunction.cttz:
+      return True, self.args[0].get_APInt(manager).dot('countTrailingZeros', [])
+
+    if self.op == CnstFunction.log2:
+      return True, self.args[0].get_APInt(manager).dot('logBase2', [])
+
+    if self.op == CnstFunction.lshr:
+      return False, self.args[0].get_APInt(manager).dot('lshr',
+        [self.args[1].get_APInt_or_u64(manager)])
+
+    if self.op == CnstFunction.max:
+      return False, CFunctionCall('APIntOps::smax',
+        self.args[0].get_APInt(manager), self.args[1].get_APInt(manager))
+
+    if self.op == CnstFunction.sext:
+      return False, self.args[0].get_APInt(manager).dot('sext',
+        [manager.get_llvm_type(self).arr('getScalarSizeInBits', [])])
+
+    if self.op == CnstFunction.trunc:
+      return False, self.args[0].get_APInt(manager).dot('trunc',
+        [manager.get_llvm_type(self).arr('getScalarSizeInBits', [])])
+
+    if self.op == CnstFunction.umax:
+      return False, CFunctionCall('APIntOps::umax', 
+        self.args[0].get_APInt(manager), self.args[1].get_APInt(manager))
+
+    if self.op == CnstFunction.width:
+      return True, manager.get_llvm_type(self.args[0]).arr('getScalarSizeInBits', [])
+
+    if self.op == CnstFunction.zext:
+      return False, self.args[0].get_APInt(manager).dot('zext', 
+        [manager.get_llvm_type(self).arr('getScalarSizeInBits',[])])
+
+    raise AliveError(self.opnames[self.op] + ' not implemented')
+
+  def get_APInt(self, manager):
+    wrap, cexp = self._get_cexp(manager)
+    if wrap:
+      return CFunctionCall('APInt', 
+        manager.get_llvm_type(self).arr('getScalarSizeInBits',[]), cexp)
+
+    return cexp
+    return self.get_Value(manager).arr('getValue',[])
+
+  def get_APInt_or_u64(self, manager):
+    return self._get_cexp(manager)[1]

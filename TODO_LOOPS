@@ -1,0 +1,22 @@
+Errors:
+- CLOSED only reject instructions that depend on cycles, not all values
+- CLOSED take union of flags when doing matching (no, the current version is correct)
+- consider types when matching and unifying
+- crash5.opt gets an assertion error
+	width() mentioning intermediate values
+- should honor hasOneUse (is this possible in general?)
+
+Enhancements:
+- handle general icmp matching
+- collect more stats about loops, eg what opts are involved
+
+- DONE handle nsw:0 et al
+- DONE isConstant()
+
+- Prof: header?
+
+Possible:
+- DONE simplify EquivalenceClass into DisjointSubsets
+- DONE break compose() into smaller pieces
+- rework Type to make finding subtype and lub easier
+- use isconst/flag predicates in verifying

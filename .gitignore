@@ -2,3 +2,5 @@
 *.pyo
 libz3.so
 z3*.py
+*.log
+*.out

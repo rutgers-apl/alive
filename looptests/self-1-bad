@@ -1,0 +1,9 @@
+; expect 1 loop
+; FIXME: require non-constant
+Name: AndOrXor:1175
+Pre: MaskedValueIsZero(%A, lshr(-1, countLeadingZeros(C)))
+%lhs = sub %A, %B
+%r = and %lhs, C
+  =>
+%neg = sub 0, %B
+%r = and %neg, C

@@ -1,0 +1,24 @@
+; expect 1 composition
+; unifies pattern instrs (%sum and %rhs)
+
+Name: (AddSub:1574;Select:967a@%dif)
+Pre: (C0 == (C - C2))
+  %sum = add C0, %X
+  %rhs = add %X, C2
+  %r = sub C, %rhs
+  %r1 = select i1 %c, %sum, %r
+=>
+  %neg = sub 0, %X
+  %sel = select i1 %c, %X, %neg
+  %r1 = add C0, %sel
+
+Name: (AddSub:1574;Select:967a@%dif)
+Pre: (C0 == (C - C2))
+  %sum = add nsw C0, %X
+  %rhs = add %X, C2
+  %r = sub C, %rhs
+  %r1 = select i1 %c, %sum, %r
+=>
+  %neg = sub 0, %X
+  %sel = select i1 %c, %X, %neg
+  %r1 = add C0, %sel

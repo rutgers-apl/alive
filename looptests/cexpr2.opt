@@ -1,0 +1,22 @@
+; expect 0 compositions
+; should be rejected
+; matching pattern %A against code %v2 is impossible, because %A occurs in the final pattern
+Name: Select:465
+Pre: isPowerOf2(C1) && isPowerOf2(C2) && log2(C2) >= log2(C1)
+%and = and %X, C1
+%c = icmp eq %and, 0
+%F = or i11 %Y, C2
+%r = select %c, %Y, %F
+  =>
+%and = and %X, C1
+%v = ZExtOrTrunc %and
+%v2 = shl %v, log2(C2)-log2(C1)
+%r = or %v2, %Y
+
+Name: AndOrXor:2284
+%o = or %A, %B
+%op1 = xor %o, -1
+%r = or %A, %op1
+  =>
+%not = xor %B, -1
+%r = or %A, %not

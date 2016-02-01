@@ -1,0 +1,18 @@
+; expect 0 compositions
+; indirect cycle
+
+Name: Select:510
+Pre: ((C2 == (C + 1)) && (C != ((1 << (width(%X) - 1)) - 1)))
+  %c = icmp sgt %X, C
+  %r = select i1 %c, %X, C2
+=>
+  %c2 = icmp slt %X, C2
+  %r = select i1 %c2, C2, %X
+
+Name: Select:859
+Pre: true
+  %nota = xor %a, -1
+  %r = select i1 %a, %b, %nota
+=>
+  %nota = xor %a, -1
+  %r = or %nota, %b
